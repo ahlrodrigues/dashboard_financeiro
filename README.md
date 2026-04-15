@@ -5,31 +5,44 @@ Dashboard para acompanhamento de contratos cancelados que ainda possuem equipame
 ## Instalação
 
 ```bash
-sudo bash install.sh
+# Clone o repositório
+git clone git@github.com:ahlrodrigues/dashboard_financeir.git
+cd dashboard_financeiro
+
+# Edite as credenciais no install.sh.template
+nano install.sh.template
+# Altere: SGP_PASS="SUA_SENHA_AQUI"
+
+# Execute a instalação
+sudo bash install.sh.template
 ```
 
 ## Estrutura
 
 ```
 dashboard_financeiro/
-├── dashboard_financeiro.html  # Interface do dashboard
-├── install.sh                 # Script de instalação
-├── uninstall.sh               # Script de desinstalação
-└── server.py                 # Servidor proxy API (copiado para /var/www/)
+├── dashboard_financeiro.html   # Interface do dashboard
+├── install.sh.template        # Script de instalação (configure credenciais)
+├── uninstall.sh              # Script de desinstalação
+└── README.md
 ```
 
 ## Uso
 
-1. Acesse: `http://localhost/` (ou IP do servidor)
+1. Acesse: `http://IP-DO-SERVIDOR:8000/`
 2. Selecione o mês desejado
 3. Clique em "Atualizar" para recarregar os dados
 
-## Atualização Automática
+## Configuração
 
-O dashboard possui dois tipos de atualização:
+No arquivo `install.sh.template`, configure:
 
-1. **Navegador (JavaScript)**: A cada 5 minutos via `setInterval` - usa localStorage para cache
-2. **Servidor (Cron)**: Script executado via cron para manter o servidor ativo
+```bash
+SGP_BASE="https://sgp.net4you.com.br/api"
+SGP_USER="robo"
+SGP_PASS="SUA_SENHA_AQUI"
+PORT=8000
+```
 
 ## Comandos
 
@@ -38,7 +51,7 @@ O dashboard possui dois tipos de atualização:
 sudo systemctl status dashboard-financeiro
 
 # Ver logs
-sudo tail -f /var/log/dashboard_update.log
+sudo journalctl -u dashboard-financeiro -f
 
 # Reiniciar serviço
 sudo systemctl restart dashboard-financeiro
@@ -47,20 +60,12 @@ sudo systemctl restart dashboard-financeiro
 sudo bash uninstall.sh
 ```
 
-## Configuração
-
-O arquivo `server.py` contém as configurações da API:
-
-```python
-SGP_BASE = 'https://sgp.net4you.com.br/api'
-AUTH = ('robo', 'Ox(?YMae?0V3V#}HIGcF')
-```
-
-Para alterar, edite `/var/www/dashboard_financeiro/server.py` e reinicie o serviço.
-
 ## Requisitos
 
 - Debian/Ubuntu
 - Python 3.8+
-- Nginx
 - Acesso à internet (para API do SGP)
+
+## Atualização Automática
+
+O dashboard atualiza automaticamente a cada 5 minutos via JavaScript no navegador, usando localStorage para cache.
