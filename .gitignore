@@ -53,3 +53,7 @@ htmlcov/
 *.bak
 *.backup
 *.old
+
+# Scripts com credenciais
+install.sh
+!install.sh.template
