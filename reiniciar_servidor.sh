@@ -30,6 +30,9 @@ if [[ -n "$PIDS" ]]; then
     sleep 1
 fi
 
+fuser -k ${PORT}/tcp 2>/dev/null || true
+sleep 1
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando servidor na porta $PORT" >> "$LOG_FILE"
 nohup python3 server.py >> "$LOG_FILE" 2>&1 &
 NEW_PID=$!
