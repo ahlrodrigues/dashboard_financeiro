@@ -308,11 +308,16 @@
                 console.log('Buscando comodatos para mes:', mes);
                 statusEl.textContent = 'Carregando...';
                 const comodatos = await getComodatos(mes);
+                console.log('Total comodatos da API:', comodatos.length);
 
                 const activeComodatos = comodatos.filter(c => c.status === 2 && c.contrato_id);
+                console.log('Comodatos ativos (status=2):', activeComodatos.length);
+                
                 const uniqueContracts = [...new Set(activeComodatos.map(c => c.contrato_id))];
+                console.log('Contratos unicos:', uniqueContracts.length);
 
                 document.getElementById('totalComodatos').textContent = activeComodatos.length;
+                console.log('Contratos no cache:', Object.keys(cachedContracts).length);
 
                 let cachedContracts = cache?.contracts || {};
                 let needsUpdate = false;
@@ -422,6 +427,7 @@
                 }
 
                 results.sort((a, b) => new Date(b.data_status) - new Date(a.data_status));
+                console.log('Resultados encontrados:', results.length);
 
                 document.getElementById('totalCancelados').textContent = results.length;
                 document.getElementById('totalEquipamentos').textContent = Math.round(totalEquipamentos);
