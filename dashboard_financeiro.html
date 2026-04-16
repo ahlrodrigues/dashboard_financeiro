@@ -365,7 +365,7 @@
                         if (!(contratoId in cachedContracts)) {
                             try {
                                 const contratoData = await getContrato(contratoId);
-                                console.log('Contrato', contratoId, ':', JSON.stringify(contratoData).substring(0, 100));
+                                console.log('Contrato', contratoId, 'resposta:', JSON.stringify(contratoData).substring(0, 300));
                                 if (contratoData && contratoData.length > 0) {
                                     cachedContracts[contratoId] = contratoData[0];
                                 }
