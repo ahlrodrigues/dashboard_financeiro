@@ -46,7 +46,7 @@
             <div class="col-auto d-flex align-items-center">
                 <span class="last-update me-2" id="lastUpdate"></span>
                 <span class="badge bg-secondary me-3" id="progressBadge" style="display: none;">0/0</span>
-                <button class="btn btn-primary refresh-btn" onclick="loadData(true)" id="refreshBtn">
+                <button class="btn btn-primary refresh-btn" onclick="loadData(false)" id="refreshBtn">
                     <span class="loading-spinner spinner-border spinner-border-sm me-2" role="status"></span>
                     <span class="btn-text">Atualizar</span>
                 </button>
@@ -87,7 +87,7 @@
                         <h5 class="mb-0">Lista de Contratos</h5>
                     </div>
                     <div class="col-auto">
-                        <select class="form-select form-select-sm" id="filterMes" onchange="loadData()" style="width: auto;">
+                        <select class="form-select form-select-sm" id="filterMes" onchange="loadData(false)" style="width: auto;">
                             <option value="01">Janeiro 2026</option>
                             <option value="02">Fevereiro 2026</option>
                             <option value="03">Março 2026</option>
@@ -196,10 +196,13 @@
             try {
                 const cached = localStorage.getItem(CACHE_KEY + '_' + mes);
                 const contractsCached = localStorage.getItem(CACHE_CONTRACTS_KEY + '_' + mes);
+                console.log('loadCache - cached:', cached ? 'existe' : 'null');
+                console.log('loadCache - contractsCached:', contractsCached ? 'existe' : 'null');
                 if (cached && contractsCached) {
                     const data = JSON.parse(cached);
                     const contracts = JSON.parse(contractsCached);
                     console.log('Cache carregado para mes', mes + ':', data.length, 'registros');
+                    console.log('Cache contratos:', Object.keys(contracts).length, 'contratos');
                     return {
                         data: data,
                         contracts: contracts,
@@ -296,13 +299,37 @@
         }
 
         async function loadData(isUpdate = false) {
+            console.log('==========================================');
             console.log('loadData called, isUpdate:', isUpdate);
+            console.log('==========================================');
             setLoading(true);
             const statusEl = document.getElementById('lastUpdate');
             const progressBadge = document.getElementById('progressBadge');
             
             const mes = document.getElementById('filterMes').value;
-            const cache = isUpdate ? loadCache(mes) : null;
+            console.log('loadData - mes:', mes);
+            let cache = null;
+            
+            console.log('loadData - isUpdate:', isUpdate);
+            
+            if (isUpdate) {
+                cache = loadCache(mes);
+            } else {
+                cache = loadCache(mes);
+                console.log('loadData - cache result:', cache ? cache.data.length + ' registros' : 'null');
+                if (cache && cache.data && cache.data.length > 0) {
+                    console.log('Usando cache existente:', cache.data.length, 'registros');
+                    statusEl.textContent = 'Carregando do cache...';
+                    setLoading(false);
+                    const enrichedData = enrichWithOtherContracts(cache.data, cache.contracts);
+                    updateTable(enrichedData);
+                    document.getElementById('totalCancelados').textContent = cache.data.length;
+                    let totalEq = cache.data.reduce((sum, item) => sum + (item.equipamentos ? item.equipamentos.length : 0), 0);
+                    document.getElementById('totalEquipamentos').textContent = totalEq;
+                    document.getElementById('lastUpdate').textContent = 'Cache:';
+                    return;
+                }
+            }
             
             try {
                 console.log('Buscando comodatos para mes:', mes);
@@ -362,25 +389,26 @@
                         checked++;
                         progressBadge.textContent = `${checked}/${total}`;
                         
-                        if (!(contratoId in cachedContracts)) {
-                            try {
-                                const contratoData = await getContrato(contratoId);
-                                console.log('Contrato', contratoId, 'resposta:', JSON.stringify(contratoData).substring(0, 300));
-                                if (contratoData && contratoData.length > 0) {
-                                    cachedContracts[contratoId] = contratoData[0];
+if (!(contratoId in cachedContracts)) {
+                                try {
+                                    const contratoData = await getContrato(contratoId);
+                                    console.log('Contrato', contratoId, 'resposta:', JSON.stringify(contratoData).substring(0, 300));
+                                    if (contratoData && contratoData.length > 0) {
+                                        const contrato = contratoData[0];
+                                        if (contrato.status === 'Cancelado') {
+                                            cachedContracts[contratoId] = contrato;
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error(`Erro contrato ${contratoId}:`, e);
                                 }
-                            } catch (e) {
-                                console.error(`Erro contrato ${contratoId}:`, e);
                             }
-                        }
                     }
                 }
 
                 const results = [];
                 let totalEquipamentos = 0;
 
-                const contratosCancelados = Object.entries(cachedContracts).filter(([id, c]) => c.status === 'Cancelado');
-                console.log('Contratos com status Cancelado:', contratosCancelados.length);
                 const statusDist = {};
                 Object.values(cachedContracts).forEach(c => {
                     statusDist[c.status] = (statusDist[c.status] || 0) + 1;
@@ -400,9 +428,13 @@
                     });
                 }
 
+                const isFinalizado = (status) => status === 'Cancelado';
+                const contratosFinalizados = Object.entries(cachedContracts).filter(([id, c]) => isFinalizado(c.status));
+                console.log('Contratos com status Cancelado:', contratosFinalizados.length);
+
                 for (const [contratoId, contrato] of Object.entries(cachedContracts)) {
                     const contratoIdNum = parseInt(contratoId);
-                    if (contrato.status === 'Cancelado' && uniqueContracts.includes(contratoIdNum)) {
+                    if (isFinalizado(contrato.status) && uniqueContracts.includes(contratoIdNum)) {
                         const comodatoDoContratoCancelado = activeComodatos.find(c => c.contrato_id === contratoIdNum);
                         let equipamentos = [];
                         let comodatoItens = [];
