@@ -107,13 +107,13 @@
                                 <th>Data Cancelamento</th>
                                 <th>Equipamentos</th>
                                 <th>ID Comodato</th>
-                                <th>Outros Contratos Ativos</th>
+                                <th>Ação</th>
                                 <th>Ações</th>
                             </tr>
                         </thead>
                         <tbody id="tabelaBody">
                             <tr>
-                                <td colspan="7" class="text-center text-muted py-4">
+                                <td colspan="8" class="text-center text-muted py-4">
                                     <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
                                     Carregando dados...
                                 </td>
@@ -228,19 +228,28 @@
             url.searchParams.set('data_cadastro_ini', dataInicio);
             url.searchParams.set('data_cadastro_fim', dataFim);
             
+            console.log('Buscando comodatos:', url.toString());
+            
             const resp = await fetch(url.toString(), {
                 headers: { 'Authorization': AUTH_BASIC }
             });
             
+            console.log('Status resposta:', resp.status, resp.statusText);
+            
             const text = await resp.text();
-            if (!resp.ok) throw new Error(text);
+            if (!resp.ok) {
+                console.error('Erro API:', text);
+                throw new Error(text);
+            }
             
             const data = JSON.parse(text);
-            if (!Array.isArray(data)) throw new Error('Resposta inválida');
+            if (!Array.isArray(data)) throw new Error('Resposta invalida');
+            console.log('Comodatos recebidos:', data.length);
             return data;
         }
 
         async function getContrato(contratoId) {
+            console.log('Buscando contrato:', contratoId);
             const formData = new URLSearchParams({
                 token: '37ab7243-9e9c-45bc-a393-e2ccbf76eff2',
                 app: 'financeiro',
@@ -254,6 +263,7 @@
             });
 
             const text = await resp.text();
+            console.log('Contrato resposta:', contratoId, text.substring(0, 200));
             if (!text) return [];
             try {
                 return JSON.parse(text);
@@ -414,9 +424,10 @@
                 updateTable(results);
 
             } catch (error) {
-                console.error('Erro:', error);
+                console.error('Erro completo:', error);
                 progressBadge.style.display = 'none';
                 if (cache?.data) {
+                    console.log('Usando cache devido a erro');
                     statusEl.textContent = 'Erro - cache';
                     updateTable(cache.data);
                 } else {
@@ -446,9 +457,15 @@
                     <td>${formatDate(item.data_status)}</td>
                     <td>${item.equipamentos.map(eq => `<span class="equipment-tag">${eq}</span>`).join('')}</td>
                     <td><code>${item.comodato_id}</code></td>
-                    <td>${item.other_active_contracts.length > 0 
-                        ? `<span class="badge bg-warning text-dark">${item.other_active_contracts.join(', ')}</span>` 
-                        : '<span class="text-muted">-</span>'}</td>
+                    <td onclick="event.stopPropagation()">
+                        <select class="form-select form-select-sm" id="acao-${index}" onchange="salvarAcao(${index})">
+                            <option value="">Selecione...</option>
+                            <option value="contato">Contato</option>
+                            <option value="remocao">Remocao</option>
+                            <option value="criacao">Criacao</option>
+                            <option value="negativacao">Negativacao</option>
+                        </select>
+                    </td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation(); verDetalhes(${item.cliente_id})">Ver Detalhes</button>
                     </td>
@@ -459,12 +476,40 @@
             table = new DataTable('#tabelaContratos', {
                 language: { url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/pt-BR.json' },
                 pageLength: 25,
-                order: [[3, 'desc']]
+                order: [[3, 'desc']],
+                drawCallback: function() {
+                    restaurarAcoes(data);
+                }
             });
         }
 
         function verDetalhes(clienteId) {
             window.open(`https://sgp.net4you.com.br/admin/cliente/${clienteId}/edit/`, '_blank');
+        }
+
+        function salvarAcao(index) {
+            const select = document.getElementById(`acao-${index}`);
+            const acao = select.value;
+            const item = window.tableData[index];
+            if (!item) return;
+
+            let acoes = JSON.parse(localStorage.getItem('dashboard_acoes') || '{}');
+            if (acao) {
+                acoes[item.contrato_id] = acao;
+            } else {
+                delete acoes[item.contrato_id];
+            }
+            localStorage.setItem('dashboard_acoes', JSON.stringify(acoes));
+        }
+
+        function restaurarAcoes(data) {
+            const acoes = JSON.parse(localStorage.getItem('dashboard_acoes') || '{}');
+            data.forEach((item, index) => {
+                const select = document.getElementById(`acao-${index}`);
+                if (select && acoes[item.contrato_id]) {
+                    select.value = acoes[item.contrato_id];
+                }
+            });
         }
 
         function showEquipamentosModal(index) {
