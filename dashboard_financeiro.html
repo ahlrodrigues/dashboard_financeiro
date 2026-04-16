@@ -435,7 +435,9 @@
                 progressBadge.style.display = 'none';
 
                 saveCache(results, cachedContracts, mes);
+                console.log('Chamando updateTable com', results.length, 'resultados');
                 updateTable(results);
+                console.log('Tabela atualizada, tbody children:', document.getElementById('tabelaBody').children.length);
 
             } catch (error) {
                 console.error('Erro completo:', error);
@@ -456,6 +458,7 @@
         }
 
         function updateTable(data) {
+            console.log('updateTable called with', data.length, 'items');
             const tbody = document.getElementById('tabelaBody');
             
             if (data.length === 0) {
