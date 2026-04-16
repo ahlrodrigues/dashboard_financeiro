@@ -647,8 +647,27 @@ if (!(contratoId in cachedContracts)) {
             loadData(false);
         }
 
-        document.addEventListener('DOMContentLoaded', inicializar);
+        function loadVersion() {
+            fetch('version.py')
+                .then(r => r.text())
+                .then(text => {
+                    const match = text.match(/VERSION = "([^"]+)"/);
+                    if (match) {
+                        document.getElementById('version').textContent = match[1];
+                    }
+                })
+                .catch(() => {});
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            inicializar();
+            loadVersion();
+        });
         setInterval(() => loadData(true), 5 * 60 * 1000);
     </script>
+    <footer class="text-center py-3 mt-4" style="background: #f8f9fa; border-top: 1px solid #dee2e6;">
+        <strong>NET4YOU INTERNET SOLUTION</strong><br>
+        Versão: <span id="version">1.0.0</span>
+    </footer>
 </body>
 </html>
