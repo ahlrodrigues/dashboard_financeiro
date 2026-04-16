@@ -101,6 +101,7 @@
                                 <th>Data Cancelamento</th>
                                 <th>Equipamentos</th>
                                 <th>ID Comodato</th>
+                                <th>Outros Contratos Ativos</th>
                                 <th>Ações</th>
                             </tr>
                         </thead>
@@ -276,25 +277,28 @@
                 let needsUpdate = false;
 
                 if (isUpdate && cache?.data) {
-                    const existingIds = new Set(cache.data.map(d => d.contrato_id));
-                    const newIds = uniqueContracts.filter(id => !existingIds.has(id));
-                    const removedIds = existingIds.difference(new Set(uniqueContracts));
+                    const existingIds = new Set(cache.data.map(d => String(d.contrato_id)));
+                    const uniqueContractsStr = uniqueContracts.map(id => String(id));
+                    const newIds = uniqueContractsStr.filter(id => !existingIds.has(id));
+                    const removedIds = [...existingIds].filter(id => !uniqueContractsStr.includes(id));
                     
                     statusEl.textContent = `Atualizando...`;
                     
                     let checked = 0;
                     const total = newIds.length;
                     
-                    for (const id of [...newIds]) {
-                        checked++;
-                        progressBadge.textContent = `${checked}/${total}`;
-                        progressBadge.style.display = 'inline';
-                        
-                        if (!(id in cachedContracts)) {
-                            const data = await getContrato(id);
-                            if (data && data.length > 0 && data[0].status === 'Cancelado') {
-                                cachedContracts[id] = data[0];
-                                needsUpdate = true;
+                    if (total > 0) {
+                        for (const id of [...newIds]) {
+                            checked++;
+                            progressBadge.textContent = `${checked}/${total}`;
+                            progressBadge.style.display = 'inline';
+                            
+                            if (!(id in cachedContracts)) {
+                                const data = await getContrato(parseInt(id));
+                                if (data && data.length > 0 && data[0].status === 'Cancelado') {
+                                    cachedContracts[id] = data[0];
+                                    needsUpdate = true;
+                                }
                             }
                         }
                     }
@@ -328,25 +332,47 @@
                 const results = [];
                 let totalEquipamentos = 0;
 
+                const allContratosPorCliente = {};
                 for (const [contratoId, contrato] of Object.entries(cachedContracts)) {
-                    if (contrato.status === 'Cancelado' && uniqueContracts.includes(parseInt(contratoId))) {
-                        const comodato = activeComodatos.find(c => c.contrato_id === parseInt(contratoId));
+                    const clienteId = String(contrato.id_cliente);
+                    if (!allContratosPorCliente[clienteId]) {
+                        allContratosPorCliente[clienteId] = [];
+                    }
+                    allContratosPorCliente[clienteId].push({
+                        id: String(contratoId),
+                        status: contrato.status,
+                        data_status: contrato.data_status
+                    });
+                }
+
+                for (const [contratoId, contrato] of Object.entries(cachedContracts)) {
+                    const contratoIdNum = parseInt(contratoId);
+                    if (contrato.status === 'Cancelado' && uniqueContracts.includes(contratoIdNum)) {
+                        const comodatoDoContratoCancelado = activeComodatos.find(c => c.contrato_id === contratoIdNum);
                         let equipamentos = [];
+                        let otherActiveContracts = [];
                         
-                        if (comodato) {
-                            const itens = await getComodatoItens(comodato.id);
+                        if (comodatoDoContratoCancelado) {
+                            const itens = await getComodatoItens(comodatoDoContratoCancelado.id);
                             equipamentos = itens.map(i => i.produto__descricao || 'N/A');
                             totalEquipamentos += itens.reduce((sum, i) => sum + (parseFloat(i.quantidade) || 0), 0);
                         }
 
+                        const clienteId = String(contrato.id_cliente);
+                        const clienteContratos = allContratosPorCliente[clienteId] || [];
+                        otherActiveContracts = clienteContratos
+                            .filter(c => c.id !== String(contratoId) && c.status !== 'Cancelado')
+                            .map(c => parseInt(c.id));
+
                         results.push({
-                            contrato_id: parseInt(contratoId),
-                            cliente_id: contrato.id_cliente,
+                            contrato_id: contratoIdNum,
+                            cliente_id: clienteId,
                             nome: contrato.nome,
                             cpfcnpj: contrato.cpfcnpj,
                             data_status: contrato.data_status,
                             equipamentos: equipamentos,
-                            comodato_id: comodato?.id || '-'
+                            comodato_id: comodatoDoContratoCancelado?.id || '-',
+                            other_active_contracts: otherActiveContracts
                         });
                     }
                 }
@@ -380,7 +406,7 @@
             const tbody = document.getElementById('tabelaBody');
             
             if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Nenhum contrato cancelado com comodato ativo encontrado.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">Nenhum contrato cancelado com comodato ativo encontrado.</td></tr>';
                 return;
             }
 
@@ -392,6 +418,9 @@
                     <td>${formatDate(item.data_status)}</td>
                     <td>${item.equipamentos.map(eq => `<span class="equipment-tag">${eq}</span>`).join('')}</td>
                     <td><code>${item.comodato_id}</code></td>
+                    <td>${item.other_active_contracts.length > 0 
+                        ? `<span class="badge bg-warning text-dark">${item.other_active_contracts.join(', ')}</span>` 
+                        : '<span class="text-muted">-</span>'}</td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary" onclick="verDetalhes(${item.cliente_id})">Ver Detalhes</button>
                     </td>
@@ -410,12 +439,36 @@
             window.open(`https://sgp.net4you.com.br/admin/cliente/${clienteId}/edit/`, '_blank');
         }
 
+        function enrichWithOtherContracts(data, cachedContracts) {
+            const allContratosPorCliente = {};
+            for (const [contratoId, contrato] of Object.entries(cachedContracts)) {
+                const clienteId = String(contrato.id_cliente);
+                if (!allContratosPorCliente[clienteId]) {
+                    allContratosPorCliente[clienteId] = [];
+                }
+                allContratosPorCliente[clienteId].push({
+                    id: String(contratoId),
+                    status: contrato.status
+                });
+            }
+
+            return data.map(item => {
+                const clienteId = String(item.cliente_id);
+                const clienteContratos = allContratosPorCliente[clienteId] || [];
+                const otherActiveContracts = clienteContratos
+                    .filter(c => c.id !== String(item.contrato_id) && c.status !== 'Cancelado')
+                    .map(c => parseInt(c.id));
+                return { ...item, other_active_contracts: otherActiveContracts || [] };
+            });
+        }
+
         function inicializar() {
             const cache = loadCache();
-            if (cache?.data) {
-                document.getElementById('totalCancelados').textContent = cache.data.length;
+            if (cache?.data && cache?.contracts) {
+                const enrichedData = enrichWithOtherContracts(cache.data, cache.contracts);
+                document.getElementById('totalCancelados').textContent = enrichedData.length;
                 document.getElementById('lastUpdate').textContent = `Cache: ${cache.timestamp.toLocaleString('pt-BR')}`;
-                updateTable(cache.data);
+                updateTable(enrichedData);
                 loadData(true);
             } else {
                 loadData(false);
