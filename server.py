@@ -80,6 +80,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     contrato_status_cache = {}
     results_cache = {}
     RESULTS_TTL_SECONDS = 300
+    titulos_cache = {}
+    TITULOS_TTL_SECONDS = 300
     def _post_sgp(self, path, payload, timeout=60):
         url = f'{SGP_BASE}{path}'
         # Tenta JSON primeiro (padrão moderno), depois form-encoded (alguns endpoints do SGP aceitam melhor)
@@ -525,6 +527,37 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         return out
 
+    def _get_boletos_em_aberto(self, contrato_id, dias_min):
+        key = f"{contrato_id}:{int(dias_min)}"
+        cached = ProxyHandler.titulos_cache.get(key)
+        if cached and (time.time() - cached.get("ts", 0)) < ProxyHandler.TITULOS_TTL_SECONDS:
+            return cached.get("items") or []
+
+        titulos = self._fetch_titulos_por_contrato(contrato_id)
+        out = []
+        for t in titulos:
+            try:
+                if self._is_titulo_pago(t):
+                    continue
+                venc = self._titulo_vencimento_date(t)
+                if not venc:
+                    continue
+                dias = (date.today() - venc).days
+                if dias < int(dias_min):
+                    continue
+                valor = self._titulo_valor(t)
+                out.append({
+                    "vencimento": venc.isoformat(),
+                    "valor": round(float(valor), 2) if valor is not None else None,
+                    "dias_atraso": int(dias),
+                })
+            except Exception:
+                continue
+
+        out.sort(key=lambda x: (x.get("vencimento") or ""), reverse=False)
+        ProxyHandler.titulos_cache[key] = {"ts": time.time(), "items": out}
+        return out
+
     def _is_titulo_pago(self, titulo):
         status = self._pick_first(titulo, ["status", "situacao", "titulo_status"])
         if status:
@@ -614,6 +647,28 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, payload)
             return
 
+        if self.path.startswith('/api/boletos'):
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            contrato_id = (params.get('contrato', [''])[0] or '').strip()
+            try:
+                dias_min = int(params.get('dias', ['0'])[0] or 0)
+                if dias_min < 0:
+                    dias_min = 0
+            except Exception:
+                dias_min = 0
+
+            if not contrato_id:
+                self._send_json(400, {"error": "Parâmetro obrigatório ausente: contrato"})
+                return
+
+            try:
+                items = self._get_boletos_em_aberto(contrato_id, dias_min)
+                self._send_json(200, {"contrato_id": str(contrato_id), "dias_min": dias_min, "items": items})
+            except Exception as e:
+                self._send_json(502, {"error": "Falha ao consultar boletos", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
+            return
+
         if self.path.startswith('/api/contratos-suspensos-boletos'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
@@ -624,12 +679,16 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             max_contratos_check = 500
             max_fetch_seconds = 45
             max_status_seconds = 45
+            include_boletos = True
+            max_boletos_seconds = 30
+
             try:
                 dias_min = int(params.get('dias', ['30'])[0] or 30)
                 if dias_min < 1:
                     dias_min = 1
             except Exception:
                 dias_min = 30
+
             try:
                 lookback_days = int(params.get('lookback', [str(lookback_days)])[0] or lookback_days)
                 if lookback_days < 30:
@@ -638,6 +697,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     lookback_days = 3650
             except Exception:
                 lookback_days = 240
+
             # orçamento de tempo
             try:
                 # compat: max_seconds define orçamento total aproximado (divide entre fetch e status)
@@ -648,6 +708,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     max_status_seconds = max(10, max_seconds_total - max_fetch_seconds)
             except Exception:
                 pass
+
             try:
                 max_fetch_seconds = int(params.get('max_fetch_seconds', [str(max_fetch_seconds)])[0] or max_fetch_seconds)
                 if max_fetch_seconds < 5:
@@ -656,6 +717,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     max_fetch_seconds = 600
             except Exception:
                 max_fetch_seconds = 45
+
             try:
                 max_status_seconds = int(params.get('max_status_seconds', [str(max_status_seconds)])[0] or max_status_seconds)
                 if max_status_seconds < 5:
@@ -664,6 +726,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     max_status_seconds = 600
             except Exception:
                 max_status_seconds = 45
+
             try:
                 max_pages = int(params.get('max_pages', [str(max_pages)])[0] or max_pages)
                 if max_pages < 1:
@@ -672,6 +735,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     max_pages = 200
             except Exception:
                 max_pages = 30
+
             try:
                 max_contratos_check = int(params.get('max_contratos', [str(max_contratos_check)])[0] or max_contratos_check)
                 if max_contratos_check < 50:
@@ -682,15 +746,28 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 max_contratos_check = 500
 
             try:
+                include_boletos = params.get('boletos', ['1'])[0] not in ('0', 'false', 'no')
+            except Exception:
+                include_boletos = True
+
+            try:
+                max_boletos_seconds = int(params.get('max_boletos_seconds', [str(max_boletos_seconds)])[0] or max_boletos_seconds)
+                if max_boletos_seconds < 0:
+                    max_boletos_seconds = 0
+                if max_boletos_seconds > 600:
+                    max_boletos_seconds = 600
+            except Exception:
+                max_boletos_seconds = 30
+
+            try:
                 nocache = params.get('nocache', ['0'])[0] in ('1', 'true', 'yes')
-                cache_key = f"{dias_min}:{lookback_days}:{max_pages}:{max_contratos_check}:{max_fetch_seconds}:{max_status_seconds}"
+                cache_key = f"{dias_min}:{lookback_days}:{max_pages}:{max_contratos_check}:{max_fetch_seconds}:{max_status_seconds}:{1 if include_boletos else 0}:{max_boletos_seconds}"
                 cached = None if nocache else ProxyHandler.results_cache.get(cache_key)
                 if cached and (time.time() - cached.get("ts", 0)) < ProxyHandler.RESULTS_TTL_SECONDS:
                     self._send_json(200, cached.get("payload"))
                     return
 
                 started = time.time()
-                # Limita o quanto buscamos para manter responsivo.
                 fetch_started = time.time()
                 per_contrato, meta = self._fetch_overdue_contracts(
                     dias_min,
@@ -705,7 +782,6 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 meta["max_status_seconds"] = max_status_seconds
                 meta["fetch_seconds"] = round(time.time() - fetch_started, 2)
 
-                # Buscar status (SUSPENSO) via suporte/contrato/list (suporta Basic e retorna JSON de verdade)
                 contratos_ids = list(per_contrato.keys())
                 truncated_candidates = False
                 if len(contratos_ids) > max_contratos_check:
@@ -715,8 +791,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         key=lambda cid: int((per_contrato.get(cid) or {}).get("max_dias") or 0),
                         reverse=True,
                     )[:max_contratos_check]
-                out = []
 
+                out = []
                 max_workers = 12
                 checked = 0
                 suspensos = 0
@@ -728,7 +804,6 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 try:
                     it = iter(contratos_ids)
                     while True:
-                        # agenda mais trabalho (com backlog pequeno para conseguir abortar rápido)
                         while len(futs) < max_workers * 2:
                             if time.time() > status_deadline:
                                 break
@@ -777,12 +852,27 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                                 "valor_aberto": round(float(acc.get("valor") or 0.0), 2) if (acc.get("valor") or 0.0) > 0 else None,
                             })
                 finally:
-                    # não bloquear a resposta esperando todas as threads (principalmente em timeouts)
                     for fut in list(futs.keys()):
                         fut.cancel()
                     ex.shutdown(wait=False, cancel_futures=True)
 
                 out.sort(key=lambda x: x.get("dias_atraso", 0), reverse=True)
+
+                boletos_started = time.time()
+                boletos_truncated = False
+                boletos_enriched = 0
+                if include_boletos and max_boletos_seconds > 0 and out:
+                    deadline = boletos_started + max_boletos_seconds
+                    for item in out:
+                        if time.time() > deadline:
+                            boletos_truncated = True
+                            break
+                        try:
+                            item["boletos"] = self._get_boletos_em_aberto(item.get("contrato_id"), dias_min)
+                        except Exception:
+                            item["boletos"] = []
+                        boletos_enriched += 1
+
                 truncated_time = time.time() > status_deadline
                 total_seconds = round(time.time() - started, 2)
                 payload = {
@@ -794,6 +884,10 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         "contratos_status_checked": checked,
                         "contratos_suspensos": suspensos,
                         "status_seconds": round(time.time() - status_started, 2),
+                        "boletos_included": bool(include_boletos),
+                        "boletos_enriched": int(boletos_enriched),
+                        "boletos_seconds": round(time.time() - boletos_started, 2),
+                        "boletos_truncated": bool(boletos_truncated),
                         "seconds": total_seconds,
                         "cache_ttl_seconds": ProxyHandler.RESULTS_TTL_SECONDS,
                         "suspended_status_codes": sorted(list(SUSPENDED_STATUS_CODES)),

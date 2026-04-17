@@ -32,14 +32,17 @@
         .clickable-row:hover { background-color: rgba(13, 110, 253, 0.1) !important; }
         .status-devolvido { background-color: #d1e7dd !important; opacity: 0.6; }
         .status-nao-devolvido { background-color: #f8d7da !important; }
-        .badge-devolvido { background-color: #198754; }
-        .badge-pendente { background-color: #dc3545; }
-        .muted { color: #6c757d; }
-        .app-footer {
-            margin-top: 24px;
-            padding: 14px 4px 0;
-            display: flex;
-            justify-content: center;
+	        .badge-devolvido { background-color: #198754; }
+	        .badge-pendente { background-color: #dc3545; }
+	        .muted { color: #6c757d; }
+	        .row-multi-boleto { background-color: rgba(255, 193, 7, 0.12) !important; }
+	        .row-multi-boleto:hover { background-color: rgba(255, 193, 7, 0.22) !important; }
+	        .row-has-boletos { cursor: pointer; }
+	        .app-footer {
+	            margin-top: 24px;
+	            padding: 14px 4px 0;
+	            display: flex;
+	            justify-content: center;
             font-size: 0.82rem;
         }
         .footer-card {
@@ -212,28 +215,27 @@
                         <div id="suspensosError" class="alert alert-warning d-none" role="alert"></div>
                         <div id="suspensosMeta" class="small text-muted mb-2"></div>
                         <div class="table-responsive">
-                            <table id="tabelaSuspensos" class="table table-hover" style="width:100%">
-                                <thead>
-                                    <tr>
-                                        <th>Contrato</th>
-                                        <th>Cliente</th>
-                                        <th>CPF/CNPJ</th>
-                                        <th>Status</th>
-                                        <th>Cód.</th>
-                                        <th>Dias atraso</th>
-                                        <th>Vencimento</th>
-                                        <th>Valor em aberto</th>
-                                        <th>Detalhes</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tabelaSuspensosBody">
-                                    <tr>
-                                        <td colspan="9" class="text-center text-muted py-4">
-                                            Selecione a aba e clique em “Atualizar”.
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
+	                            <table id="tabelaSuspensos" class="table table-hover" style="width:100%">
+	                                <thead>
+	                                    <tr>
+	                                        <th>Contrato</th>
+	                                        <th>Cliente</th>
+	                                        <th>CPF/CNPJ</th>
+	                                        <th>Status</th>
+	                                        <th>Dias atraso</th>
+	                                        <th>Vencimento</th>
+	                                        <th>Valor em aberto</th>
+	                                        <th>Detalhes</th>
+	                                    </tr>
+	                                </thead>
+	                                <tbody id="tabelaSuspensosBody">
+	                                    <tr>
+	                                        <td colspan="8" class="text-center text-muted py-4">
+	                                            Selecione a aba e clique em “Atualizar”.
+	                                        </td>
+	                                    </tr>
+	                                </tbody>
+	                            </table>
                         </div>
                         <div class="small text-muted mt-3">
                             Observação: esta aba consome a API local <code>/api/contratos-suspensos-boletos</code> (servida por <code>server.py</code> na porta 8000). A chamada direta ao SGP via browser pode falhar por CORS/credenciais.
@@ -317,6 +319,14 @@
             return date.toLocaleDateString('pt-BR');
         }
 
+        function formatDateOnly(dateStr) {
+            if (!dateStr) return '-';
+            const s = String(dateStr).trim().slice(0, 10);
+            const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+            return formatDate(dateStr);
+        }
+
         function formatCpfCnpj(value) {
             if (!value) return '-';
             value = value.replace(/\D/g, '');
@@ -352,6 +362,15 @@
             const isoLike = s.includes('T') ? s : s.replace(' ', 'T');
             const d = new Date(isoLike);
             return Number.isNaN(d.getTime()) ? null : d;
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function diffDaysFromToday(date) {
@@ -733,7 +752,7 @@ if (!(contratoId in cachedContracts)) {
                         </select>
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation(); verDetalhes(${item.cliente_id})">Ver Detalhes</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation(); verDetalhes(${item.cliente_id})">Financeiro</button>
                     </td>
                 </tr>
             `).join('');
@@ -858,7 +877,7 @@ if (!(contratoId in cachedContracts)) {
             return 'http://' + host + ':8000';
         }
 
-	        async function fetchSuspensosFromLocalApi(diasMin, signal = undefined) {
+        async function fetchSuspensosFromLocalApi(diasMin, signal = undefined) {
 	            // 1) Primeiro: mesma origem (mais confiável, sem CORS / sem depender de localhost/127.0.0.1)
 	            const sameOriginUrl = `/api/contratos-suspensos-boletos?dias=${encodeURIComponent(String(diasMin))}`;
 	            try {
@@ -934,7 +953,7 @@ if (!(contratoId in cachedContracts)) {
             return null;
         }
 
-	        async function loadSuspensos(isUpdate = false) {
+        async function loadSuspensos(isUpdate = false) {
 	            setLoading(true);
 	            const statusEl = document.getElementById('lastUpdate');
 	            const errBox = document.getElementById('suspensosError');
@@ -968,7 +987,7 @@ if (!(contratoId in cachedContracts)) {
 
 	                if (statusEl) statusEl.textContent = 'Carregando...';
 	                if (suspTbody) {
-	                    suspTbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>Carregando dados...</td></tr>';
+	                    suspTbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>Carregando dados...</td></tr>';
 	                }
 	                const fromLocal = await fetchSuspensosFromLocalApi(diasMin, suspensosAbortCtrl.signal);
 	                if (!fromLocal) {
@@ -1004,28 +1023,122 @@ if (!(contratoId in cachedContracts)) {
 	            } finally {
 	                setLoading(false);
 	            }
-	        }
+        }
+
+        function buildBoletosDetailsHtml(contratoId, boletos, diasMin, opts = {}) {
+            const loading = !!opts.loading;
+            const error = opts.error ? String(opts.error) : '';
+            const title = `<div class="fw-semibold mb-1">Boletos em aberto • Contrato ${escapeHtml(contratoId)} (>= ${escapeHtml(diasMin)} dias)</div>`;
+            if (loading) {
+                return `<div class="p-2">${title}<div class="text-muted small"><span class="spinner-border spinner-border-sm text-primary me-2" role="status"></span>Carregando boletos...</div></div>`;
+            }
+            if (error) {
+                return `<div class="p-2">${title}<div class="text-danger small">Falha ao carregar boletos: ${escapeHtml(error)}</div></div>`;
+            }
+            if (!Array.isArray(boletos) || boletos.length === 0) {
+                return `<div class="p-2">${title}<div class="text-muted small">Nenhum boleto em aberto encontrado.</div></div>`;
+            }
+            const rows = boletos.map(b => {
+                const venc = formatDateOnly(b?.vencimento);
+                const valor = (b && (b.valor ?? b.valor_aberto ?? b.valor_em_aberto));
+                const valorFmt = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
+                const dias = (b?.dias_atraso ?? b?.dias ?? null);
+                const diasTxt = dias !== null && dias !== undefined ? `${escapeHtml(dias)}d` : '-';
+                return `<div class="d-flex justify-content-between gap-3 py-1 border-top small"><div><span class="text-muted">Venc.</span> ${escapeHtml(venc)}</div><div class="text-nowrap"><span class="text-muted">Atraso</span> ${diasTxt}</div><div class="text-nowrap">${escapeHtml(valorFmt)}</div></div>`;
+            }).join('');
+            return `<div class="p-2">${title}<div class="border rounded">${rows}</div></div>`;
+        }
+
+        async function fetchBoletosDoContrato(contratoId, diasMin) {
+            const url = `/api/boletos?contrato=${encodeURIComponent(String(contratoId))}&dias=${encodeURIComponent(String(diasMin))}`;
+            const resp = await fetchWithTimeout(url, { cache: 'no-store' }, 90000);
+            const text = await resp.text();
+            if (!resp.ok) throw new Error(text.substring(0, 200));
+            const parsed = JSON.parse(text);
+            if (parsed && Array.isArray(parsed.items)) return parsed.items;
+            return [];
+        }
+
+        function bindSuspensosRowToggle() {
+            if (window.__suspensosRowToggleBound) return;
+            window.__suspensosRowToggleBound = true;
+            const tableEl = document.getElementById('tabelaSuspensos');
+            if (!tableEl) return;
+            tableEl.addEventListener('click', async (e) => {
+                if (!tableSuspensos) return;
+                if (e.target.closest('button, a, input, select, textarea, label')) return;
+                const tr = e.target.closest('tr');
+                if (!tr || tr.classList.contains('child')) return;
+                const contratoId = tr.getAttribute('data-contrato-id');
+                if (!contratoId) return;
+
+                const row = tableSuspensos.row(tr);
+                if (!row) return;
+
+                if (row.child && row.child.isShown && row.child.isShown()) {
+                    row.child.hide();
+                    tr.classList.remove('shown');
+                    return;
+                }
+
+                const diasMin = Math.max(1, parseInt(document.getElementById('filterDiasVencido')?.value || '60', 10));
+                row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { loading: true })).show();
+                tr.classList.add('shown');
+
+                try {
+                    const item = window.__suspensosByContratoId?.[String(contratoId)];
+                    let boletos = Array.isArray(item?.boletos) ? item.boletos : null;
+                    if (!boletos) {
+                        boletos = await fetchBoletosDoContrato(contratoId, diasMin);
+                        if (item) item.boletos = boletos;
+                    }
+                    row.child(buildBoletosDetailsHtml(contratoId, boletos, diasMin)).show();
+                } catch (err) {
+                    row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { error: err?.message || err })).show();
+                }
+            });
+        }
 
         function updateTableSuspensos(data) {
             const tbody = document.getElementById('tabelaSuspensosBody');
             if (!Array.isArray(data) || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Nenhum contrato suspenso com boletos vencidos no critério informado.</td></tr>';
-                if (tableSuspensos) tableSuspensos.destroy();
-                return;
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">Nenhum contrato suspenso com boletos vencidos no critério informado.</td></tr>';
+	                if (tableSuspensos) tableSuspensos.destroy();
+	                return;
+	            }
+
+            window.__suspensosByContratoId = {};
+            for (const item of data) {
+                if (item && item.contrato_id !== undefined && item.contrato_id !== null) {
+                    window.__suspensosByContratoId[String(item.contrato_id)] = item;
+                }
+            }
+
+            function renderBoletosValor(item) {
+                const boletos = item?.boletos;
+                if (Array.isArray(boletos) && boletos.length > 0) {
+                    const first = boletos[0];
+                    const venc = first?.vencimento || '-';
+                    const valor = (first && (first.valor ?? first.valor_aberto ?? first.valor_em_aberto));
+                    const valorHtml = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
+                    const more = boletos.length > 1 ? `<div class="small text-muted">+${boletos.length - 1} boleto(s) (clique na linha)</div>` : `<div class="small text-muted">clique na linha</div>`;
+                    return `<div class="small"><span class="text-muted">${formatDateOnly(venc)}</span> ${valorHtml}</div>${more}`;
+                }
+                if (item.valor_aberto !== null && item.valor_aberto !== undefined) return formatCurrency(item.valor_aberto);
+                return '-';
             }
 
             tbody.innerHTML = data.map((item) => `
-                <tr>
+                <tr data-contrato-id="${escapeHtml(item.contrato_id)}" class="${(Array.isArray(item?.boletos) && item.boletos.length > 0) ? 'row-has-boletos' : ''} ${(Array.isArray(item?.boletos) && item.boletos.length > 1) ? 'row-multi-boleto' : ''}">
                     <td><strong>${item.contrato_id}</strong></td>
                     <td>${item.nome || '-'}</td>
                     <td>${formatCpfCnpj(item.cpfcnpj || '')}</td>
                     <td>${item.status || '-'}</td>
-                    <td>${item.status_code ?? '-'}</td>
                     <td>${item.dias_atraso ?? '-'}</td>
                     <td>${item.vencimento || '-'}</td>
-                    <td>${item.valor_aberto !== null ? formatCurrency(item.valor_aberto) : '-'}</td>
+                    <td>${renderBoletosValor(item)}</td>
                     <td>
-                        ${item.cliente_id ? `<button class="btn btn-sm btn-outline-primary" onclick="verDetalhes(${item.cliente_id})">Cliente</button>` : ''}
+                        ${item.cliente_id ? `<button class="btn btn-sm btn-outline-primary" onclick="verDetalhes(${item.cliente_id})">Financeiro</button>` : ''}
                         <button class="btn btn-sm btn-outline-secondary ms-1" onclick="verContrato('${item.contrato_id}')">Contrato</button>
                     </td>
                 </tr>
@@ -1034,11 +1147,11 @@ if (!(contratoId in cachedContracts)) {
             if (tableSuspensos) tableSuspensos.destroy();
             tableSuspensos = new DataTable('#tabelaSuspensos', {
                 pageLength: 25,
-                order: [[5, 'desc']],
-                language: {
-                    "sEmptyTable": "Nenhum registro encontrado",
-                    "sInfo": "Mostrando de _START_ ate _END_ de _TOTAL_ registros",
-                    "sInfoEmpty": "Mostrando 0 ate 0 de 0 registros",
+                order: [[4, 'desc']],
+	                language: {
+	                    "sEmptyTable": "Nenhum registro encontrado",
+	                    "sInfo": "Mostrando de _START_ ate _END_ de _TOTAL_ registros",
+	                    "sInfoEmpty": "Mostrando 0 ate 0 de 0 registros",
                     "sLengthMenu": "_MENU_ registros por pagina",
                     "sLoadingRecords": "Carregando...",
                     "sProcessing": "Processando...",
@@ -1052,10 +1165,12 @@ if (!(contratoId in cachedContracts)) {
                     }
                 }
             });
+            bindSuspensosRowToggle();
         }
 
         function verDetalhes(clienteId) {
-            window.open(`https://sgp.net4you.com.br/admin/cliente/${clienteId}/edit/`, '_blank');
+            if (!clienteId && clienteId !== 0) return;
+            window.open(`https://sgp.net4you.com.br/admin/financeiro/cliente/${clienteId}/`, '_blank');
         }
 
         function verContrato(contratoId) {
