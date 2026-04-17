@@ -556,6 +556,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             return cached.get("items") or []
 
         titulos = self._fetch_titulos_por_contrato(contrato_id)
+        # NOTE: mantenha este processamento simples; debug detalhado fica no handler /api/boletos
         out = []
         for t in titulos:
             try:
@@ -581,6 +582,21 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         out.sort(key=lambda x: (x.get("vencimento") or ""), reverse=False)
         ProxyHandler.titulos_cache[key] = {"ts": time.time(), "items": out}
         return out
+
+    def _summarize_titulos(self, titulos, limit=5):
+        if not isinstance(titulos, list):
+            return {"count": 0, "sample": []}
+        sample = []
+        for t in titulos[: max(0, int(limit or 0))]:
+            if not isinstance(t, dict):
+                continue
+            sample.append({
+                "status": self._pick_first(t, ["status", "situacao", "titulo_status"]),
+                "venc_raw": self._pick_first(t, ["data_vencimento", "dt_vencimento", "vencimento", "titulo_vencimento", "boleto_vencimento", "dataVencimento", "dtVencimento", "dataVenc"]),
+                "valor_raw": self._pick_first(t, ["valor_em_aberto", "valor_aberto", "valor_vencido", "valor", "valor_titulo", "valor_original", "valor_total", "valorCorrigido"]),
+                "contrato_raw": self._pick_first(t, ["clienteContrato", "cliente_contrato", "clienteContratoId", "cliente_contrato_id", "contrato", "contrato_id", "contratoId"]),
+            })
+        return {"count": len(titulos), "sample": sample}
 
     def _is_titulo_pago(self, titulo):
         status = self._pick_first(titulo, ["status", "situacao", "titulo_status"])
@@ -675,6 +691,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             contrato_id = (params.get('contrato', [''])[0] or '').strip()
+            debug = params.get('debug', ['0'])[0] in ('1', 'true', 'yes')
+            nocache = params.get('nocache', ['0'])[0] in ('1', 'true', 'yes')
             try:
                 dias_raw = params.get('dias', [None])[0]
                 dias_min = None if (dias_raw is None or str(dias_raw).strip() == '') else int(dias_raw)
@@ -686,8 +704,24 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             try:
+                if nocache:
+                    # remove apenas as entradas do contrato solicitado (todas as variantes de dias)
+                    for k in list(ProxyHandler.titulos_cache.keys()):
+                        if str(k).startswith(f"{contrato_id}:"):
+                            ProxyHandler.titulos_cache.pop(k, None)
+
                 items = self._get_boletos_em_aberto(contrato_id, dias_min)
-                self._send_json(200, {"contrato_id": str(contrato_id), "dias_min": dias_min, "items": items})
+                payload = {"contrato_id": str(contrato_id), "dias_min": dias_min, "items": items}
+                if debug:
+                    try:
+                        titulos = self._fetch_titulos_por_contrato(contrato_id)
+                        payload["debug"] = {
+                            "ura_titulos": self._summarize_titulos(titulos, limit=7),
+                            "parsed_items": len(items),
+                        }
+                    except Exception as e:
+                        payload["debug"] = {"error": f"{type(e).__name__}: {str(e)}"}
+                self._send_json(200, payload)
             except Exception as e:
                 self._send_json(502, {"error": "Falha ao consultar boletos", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
             return
