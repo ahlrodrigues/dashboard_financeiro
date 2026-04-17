@@ -444,7 +444,7 @@
                     // Retry a cada 5min se não conseguiu preencher
                     const lastTs = Number(td.dataset.lastTryTs || '0');
                     if (td.dataset.hydrated === '1') continue;
-                    if (lastTs && (Date.now() - lastTs) < 5 * 60 * 1000) continue;
+                    if (lastTs && (Date.now() - lastTs) < 30 * 1000) continue;
                     td.dataset.lastTryTs = String(Date.now());
                     // se já tem preenchido (localStorage) não precisa consultar
                     const local = (loadRequererMap() || {})[String(contratoId)];
@@ -454,6 +454,7 @@
                         continue;
                     }
                     try {
+                        if (td.textContent.trim() === '-' || !td.textContent.trim()) td.textContent = '...';
                         const info = await fetchRequererInfo(contratoId);
                         if (info?.responsavel) {
                             td.textContent = String(info.responsavel);
@@ -461,9 +462,12 @@
                             map[String(contratoId)] = String(info.responsavel);
                             saveRequererMap(map);
                             td.dataset.hydrated = '1';
+                        } else {
+                            td.textContent = '-';
                         }
                     } catch {
                         // ignora: pode não existir OC ainda
+                        td.textContent = '-';
                     }
                 }
             } catch {
@@ -1462,14 +1466,14 @@ if (!(contratoId in cachedContracts)) {
                 if (Array.isArray(boletos) && boletos.length > 0) {
                     // Regra: na linha "fechada", mostrar apenas o boleto mais antigo.
                     const oldest = boletos[0];
-                    const venc = oldest?.vencimento || '-';
                     const valor = (oldest && (oldest.valor ?? oldest.valor_aberto ?? oldest.valor_em_aberto));
                     const valorHtml = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
                     const moreCount = boletos.length - 1;
                     const badge = moreCount > 0
                         ? `<span class="ms-1 small text-danger">+${moreCount}</span>`
                         : '';
-                    return `<div class="small"><span class="text-muted">${formatDateOnly(venc)}</span> <span class="boletos-child-valor">${valorHtml}</span>${badge}</div>`;
+                    // A coluna "Vencimento" já mostra a data; aqui mostramos apenas o valor (+x).
+                    return `<div class="small"><span class="boletos-child-valor">${valorHtml}</span>${badge}</div>`;
                 }
                 if (item.valor_aberto !== null && item.valor_aberto !== undefined) return formatCurrency(item.valor_aberto);
                 return '-';
