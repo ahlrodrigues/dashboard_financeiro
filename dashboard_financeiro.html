@@ -38,6 +38,12 @@
 	        .row-multi-boleto { background-color: rgba(255, 193, 7, 0.12) !important; }
 	        .row-multi-boleto:hover { background-color: rgba(255, 193, 7, 0.22) !important; }
 	        .row-has-boletos { cursor: pointer; }
+	        .boletos-child { padding: 6px 10px; }
+	        .boletos-child-title { margin-bottom: 6px; }
+	        .boletos-child-list { border: 1px solid rgba(15, 23, 42, 0.12); border-radius: 10px; padding: 6px 10px; background: #fff; max-height: 220px; overflow: auto; }
+	        .boleto-line { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+	        .boleto-line + .boleto-line { border-top: 1px dashed rgba(15, 23, 42, 0.10); margin-top: 6px; padding-top: 6px; }
+	        .boleto-valor { white-space: nowrap; font-variant-numeric: tabular-nums; }
 	        .app-footer {
 	            margin-top: 24px;
 	            padding: 14px 4px 0;
@@ -1028,25 +1034,28 @@ if (!(contratoId in cachedContracts)) {
         function buildBoletosDetailsHtml(contratoId, boletos, diasMin, opts = {}) {
             const loading = !!opts.loading;
             const error = opts.error ? String(opts.error) : '';
-            const title = `<div class="fw-semibold mb-1">Boletos em aberto • Contrato ${escapeHtml(contratoId)}</div>`;
+            const title = `<div class="fw-semibold boletos-child-title">Boletos vencidos • Contrato ${escapeHtml(contratoId)}</div>`;
             if (loading) {
-                return `<div class="p-2">${title}<div class="text-muted small"><span class="spinner-border spinner-border-sm text-primary me-2" role="status"></span>Carregando boletos...</div></div>`;
+                return `<div class="boletos-child">${title}<div class="text-muted small"><span class="spinner-border spinner-border-sm text-primary me-2" role="status"></span>Carregando boletos...</div></div>`;
             }
             if (error) {
-                return `<div class="p-2">${title}<div class="text-danger small">Falha ao carregar boletos: ${escapeHtml(error)}</div></div>`;
+                return `<div class="boletos-child">${title}<div class="text-danger small">Falha ao carregar boletos: ${escapeHtml(error)}</div></div>`;
             }
-            if (!Array.isArray(boletos) || boletos.length === 0) {
-                return `<div class="p-2">${title}<div class="text-muted small">Nenhum boleto em aberto encontrado.</div></div>`;
+            const vencidos = Array.isArray(boletos)
+                ? boletos.filter(b => Number(b?.dias_atraso ?? 0) > 0)
+                : [];
+            if (!vencidos.length) {
+                return `<div class="boletos-child">${title}<div class="text-muted small">Nenhum boleto vencido em aberto encontrado.</div></div>`;
             }
-            const rows = boletos.map(b => {
+
+            // Layout compacto: mesma ideia da linha fechada (vencimento à esquerda, valor à direita).
+            const rows = vencidos.map(b => {
                 const venc = formatDateOnly(b?.vencimento);
                 const valor = (b && (b.valor ?? b.valor_aberto ?? b.valor_em_aberto));
                 const valorFmt = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
-                const dias = (b?.dias_atraso ?? b?.dias ?? null);
-                const diasTxt = dias !== null && dias !== undefined ? `${escapeHtml(dias)}d` : '-';
-                return `<div class="d-flex justify-content-between gap-3 py-1 border-top small"><div><span class="text-muted">Venc.</span> ${escapeHtml(venc)}</div><div class="text-nowrap"><span class="text-muted">Atraso</span> ${diasTxt}</div><div class="text-nowrap">${escapeHtml(valorFmt)}</div></div>`;
+                return `<div class="boleto-line small"><div class="text-muted">${escapeHtml(venc)}</div><div class="boleto-valor">${escapeHtml(valorFmt)}</div></div>`;
             }).join('');
-            return `<div class="p-2">${title}<div class="border rounded">${rows}</div></div>`;
+            return `<div class="boletos-child">${title}<div class="boletos-child-list">${rows}</div></div>`;
         }
 
         async function fetchBoletosDoContrato(contratoId) {
