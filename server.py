@@ -518,12 +518,33 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 data = resp.json()
             except Exception as e:
                 raise RuntimeError(f"URA titulos JSON inválido ({mode}): {type(e).__name__}: {str(e)}")
-            if not isinstance(data, list):
+            titulos = None
+            pag = None
+            if isinstance(data, list):
+                titulos = data
+            elif isinstance(data, dict):
+                # Alguns ambientes retornam o mesmo formato paginado usado em _ura_titulos_page:
+                # { paginacao: {...}, titulos: [...] }
+                titulos = data.get("titulos")
+                pag = data.get("paginacao") or {}
+            if not isinstance(titulos, list):
                 raise RuntimeError(f"URA titulos resposta inesperada: {type(data).__name__}")
-            out.extend(data)
-            if len(data) < limit:
-                break
-            offset += limit
+
+            out.extend(titulos)
+            if pag and isinstance(pag, dict):
+                try:
+                    total = int(pag.get("total") or 0)
+                    parcial = int(pag.get("parcial") or len(titulos))
+                except Exception:
+                    total = 0
+                    parcial = len(titulos)
+                offset += parcial
+                if offset >= total or parcial == 0:
+                    break
+            else:
+                if len(titulos) < limit:
+                    break
+                offset += limit
 
         return out
 
