@@ -23,5 +23,14 @@
     "suspended_status_tokens": [
       "SUSP"
     ]
+  },
+  "requerer": {
+    "conteudo": "Financeiro - Negociação",
+    "ocorrenciatipo": 140,
+    "motivoos": 4018,
+    "setor": 1,
+    "os_prioridade": 2,
+    "classificacao_field": "classificacao",
+    "classificacao_value": "suspenso"
   }
 }

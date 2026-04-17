@@ -27,6 +27,14 @@ AUTH_ENABLED = True
 AUTH_JWT_SECRET = "dashboard-secret-change-in-production"
 AUTH_ADMIN_GROUP = "financeiro"
 AUTH_TOKEN_TTL_SECONDS = 12 * 60 * 60
+REQUERER_CONTEUDO = "Financeiro - Negociação"
+REQUERER_OCORRENCIA_TIPO = 140
+REQUERER_MOTIVO_OS = 4018
+REQUERER_SETOR = 1
+REQUERER_PRIORIDADE = 2
+# Campo/valor opcionais para "classificação" (algumas instâncias do SGP exigem/aceitam chaves diferentes).
+REQUERER_CLASSIFICACAO_FIELD = "classificacao"
+REQUERER_CLASSIFICACAO_VALUE = "suspenso"
 SUSPENDED_STATUS_CODES = set()
 SUSPENDED_STATUS_TOKENS = ["SUSP"]
 try:
@@ -62,6 +70,43 @@ try:
             ttl = int(auth_cfg.get('token_ttl_seconds') or AUTH_TOKEN_TTL_SECONDS)
             if ttl > 0:
                 AUTH_TOKEN_TTL_SECONDS = ttl
+        except Exception:
+            pass
+        req_cfg = cfg.get('requerer') or cfg.get('ocorrencia') or {}
+        try:
+            REQUERER_CONTEUDO = str(req_cfg.get('conteudo') or REQUERER_CONTEUDO)
+        except Exception:
+            pass
+        try:
+            v = req_cfg.get('ocorrenciatipo')
+            if v is not None:
+                REQUERER_OCORRENCIA_TIPO = int(v)
+        except Exception:
+            pass
+        try:
+            v = req_cfg.get('motivoos')
+            if v is not None:
+                REQUERER_MOTIVO_OS = int(v)
+        except Exception:
+            pass
+        try:
+            v = req_cfg.get('setor')
+            if v is not None:
+                REQUERER_SETOR = int(v)
+        except Exception:
+            pass
+        try:
+            v = req_cfg.get('os_prioridade')
+            if v is not None:
+                REQUERER_PRIORIDADE = int(v)
+        except Exception:
+            pass
+        try:
+            REQUERER_CLASSIFICACAO_FIELD = str(req_cfg.get('classificacao_field') or REQUERER_CLASSIFICACAO_FIELD).strip()
+        except Exception:
+            pass
+        try:
+            REQUERER_CLASSIFICACAO_VALUE = str(req_cfg.get('classificacao_value') or REQUERER_CLASSIFICACAO_VALUE).strip()
         except Exception:
             pass
         codes = cfg.get('dashboard', {}).get('suspended_status_codes') or []
@@ -1213,6 +1258,74 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if path_only == "/api/auth/logout":
             # Stateless: apenas responde OK. O frontend limpa o token.
             self._send_json(200, {"ok": True, "message": "Logout realizado."})
+            return
+
+        if path_only == "/api/requerer":
+            auth = self._require_auth()
+            if not auth:
+                return
+            body = self._read_json_body()
+            if body is None:
+                self._send_json(400, {"ok": False, "message": "JSON inválido no corpo da requisição."})
+                return
+            contrato = str((body or {}).get("contrato") or (body or {}).get("contrato_id") or "").strip()
+            if not contrato:
+                self._send_json(400, {"ok": False, "message": "Parâmetro obrigatório ausente: contrato"})
+                return
+
+            cliente_nome = str((body or {}).get("cliente_nome") or (body or {}).get("nome") or "").strip()
+            telefone = str((body or {}).get("telefone") or "").strip()
+            observacao_extra = str((body or {}).get("observacao") or "").strip()
+
+            requested_by = str(auth.get("sub") or "").strip()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            observacao = f"Requerido via Dashboard Financeiro por {requested_by} em {now}."
+            if observacao_extra:
+                observacao = f"{observacao}\n{observacao_extra}"
+
+            payload = {
+                "contrato": contrato,
+                "conteudo": str(REQUERER_CONTEUDO or "Requerimento"),
+                "observacao": observacao,
+                "ocorrenciatipo": int(REQUERER_OCORRENCIA_TIPO),
+                "motivoos": int(REQUERER_MOTIVO_OS),
+                "setor": int(REQUERER_SETOR),
+                "os_prioridade": int(REQUERER_PRIORIDADE),
+            }
+            if cliente_nome:
+                payload["contato_nome"] = cliente_nome
+            if telefone:
+                payload["contato_telefone"] = telefone
+            if requested_by:
+                # No SGP, este campo costuma aceitar o usuário/nome do responsável.
+                payload["responsavel"] = requested_by
+
+            class_field = str(REQUERER_CLASSIFICACAO_FIELD or "").strip()
+            class_value = str(REQUERER_CLASSIFICACAO_VALUE or "").strip()
+            if class_field and class_value:
+                payload[class_field] = class_value
+
+            try:
+                resp, _mode = self._post_ura("/ura/chamado/", payload, timeout=40)
+                # repassar status e tentar decodificar JSON
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                out = None
+                if "application/json" in content_type:
+                    try:
+                        out = resp.json()
+                    except Exception:
+                        out = {"raw": (resp.text or "")[:500]}
+                else:
+                    try:
+                        out = resp.json()
+                    except Exception:
+                        out = {"raw": (resp.text or "")[:500]}
+                if resp.status_code != 200:
+                    self._send_json(resp.status_code, {"ok": False, "message": "Falha ao criar ocorrência no SGP.", "sgp": out})
+                    return
+                self._send_json(200, {"ok": True, "message": "Ocorrência criada.", "sgp": out})
+            except Exception as e:
+                self._send_json(502, {"ok": False, "message": "Falha ao criar ocorrência.", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
             return
 
         if self._is_protected_path(path_only):

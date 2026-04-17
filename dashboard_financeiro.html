@@ -383,6 +383,95 @@
             } catch {}
         }
 
+        function getStoredUser() {
+            try {
+                const raw = sessionStorage.getItem('dashboard_user');
+                return raw ? JSON.parse(raw) : null;
+            } catch {
+                return null;
+            }
+        }
+
+        function getLoggedUsername() {
+            const u = getStoredUser();
+            return String(u?.username || u?.nome || '').trim();
+        }
+
+        function loadRequererMap() {
+            try {
+                return JSON.parse(localStorage.getItem('dashboard_financeiro_requerer') || '{}') || {};
+            } catch {
+                return {};
+            }
+        }
+
+        function saveRequererMap(map) {
+            try {
+                localStorage.setItem('dashboard_financeiro_requerer', JSON.stringify(map || {}));
+            } catch {}
+        }
+
+        function applyRequererMarksToSuspensosTable() {
+            const map = loadRequererMap();
+            const rows = Array.from(document.querySelectorAll('#tabelaSuspensosBody tr[data-contrato-id]'));
+            for (const tr of rows) {
+                const contratoId = tr.getAttribute('data-contrato-id');
+                if (!contratoId) continue;
+                const td = tr.querySelector('td[data-user-name]');
+                if (!td) continue;
+                const val = map[String(contratoId)];
+                if (val) td.textContent = String(val);
+            }
+        }
+
+        async function requererOcorrencia(contratoId) {
+            const normalized = String(contratoId || '').trim();
+            if (!normalized) return;
+            const username = getLoggedUsername();
+            const ok = confirm(`Criar ocorrência Financeiro - Negociação (140/4018) para o contrato ${normalized}?\nResponsável: ${username || '-'}`);
+            if (!ok) return;
+
+            const btn = document.querySelector(`#tabelaSuspensosBody tr[data-contrato-id="${CSS.escape(normalized)}"] button[data-action="requerer"]`);
+            if (btn) {
+                btn.disabled = true;
+                btn.dataset.oldText = btn.textContent;
+                btn.textContent = '...';
+            }
+
+            try {
+                const rowTr = btn ? btn.closest('tr[data-contrato-id]') : null;
+                const clienteNome = rowTr ? String(rowTr.querySelector('td:nth-child(2)')?.textContent || '').trim() : '';
+                const resp = await fetchWithTimeout('/api/requerer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contrato: normalized, cliente_nome: clienteNome })
+                }, 45000);
+
+                const text = await resp.text();
+                let data = null;
+                try { data = JSON.parse(text); } catch { data = { ok: false, message: text }; }
+
+                if (!resp.ok || !data?.ok) {
+                    throw new Error(data?.message || 'Falha ao criar ocorrência.');
+                }
+
+                const map = loadRequererMap();
+                map[normalized] = username || 'OK';
+                saveRequererMap(map);
+                applyRequererMarksToSuspensosTable();
+
+                alert('Ocorrência criada com sucesso.');
+            } catch (e) {
+                alert(e?.message || String(e || 'Falha ao criar ocorrência.'));
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = btn.dataset.oldText || 'Requerer';
+                    delete btn.dataset.oldText;
+                }
+            }
+        }
+
         function showMainApp() {
             const app = document.getElementById('mainApp');
             if (app) app.style.display = '';
@@ -1341,7 +1430,7 @@ if (!(contratoId in cachedContracts)) {
                     <td class="muted small" data-user-name="">-</td>
                     <td>
                         ${item.cliente_id ? `<button class="btn btn-sm btn-outline-primary" onclick="verDetalhes(${item.cliente_id})">Financeiro</button>` : ''}
-                        <button class="btn btn-sm btn-outline-secondary ms-1" onclick="verContrato('${item.contrato_id}')">Requerer</button>
+                        <button class="btn btn-sm btn-outline-secondary ms-1" data-action="requerer" onclick="requererOcorrencia('${item.contrato_id}')">Requerer</button>
                     </td>
                 </tr>
             `).join('');
@@ -1368,6 +1457,7 @@ if (!(contratoId in cachedContracts)) {
                 }
             });
             bindSuspensosRowToggle();
+            applyRequererMarksToSuspensosTable();
         }
 
         function verDetalhes(clienteId) {
