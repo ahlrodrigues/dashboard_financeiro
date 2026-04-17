@@ -1117,12 +1117,14 @@ if (!(contratoId in cachedContracts)) {
             function renderBoletosValor(item) {
                 const boletos = item?.boletos;
                 if (Array.isArray(boletos) && boletos.length > 0) {
-                    const first = boletos[0];
-                    const venc = first?.vencimento || '-';
-                    const valor = (first && (first.valor ?? first.valor_aberto ?? first.valor_em_aberto));
-                    const valorHtml = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
-                    const more = boletos.length > 1 ? `<div class="small text-muted">+${boletos.length - 1} boleto(s) (clique na linha)</div>` : `<div class="small text-muted">clique na linha</div>`;
-                    return `<div class="small"><span class="text-muted">${formatDateOnly(venc)}</span> ${valorHtml}</div>${more}`;
+                    const lines = boletos.map(b => {
+                        const venc = b?.vencimento || '-';
+                        const valor = (b && (b.valor ?? b.valor_aberto ?? b.valor_em_aberto));
+                        const valorHtml = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
+                        return `<div class="small"><span class="text-muted">${formatDateOnly(venc)}</span> ${valorHtml}</div>`;
+                    }).join('');
+                    const hint = `<div class="small text-muted">clique na linha</div>`;
+                    return `${lines}${hint}`;
                 }
                 if (item.valor_aberto !== null && item.valor_aberto !== undefined) return formatCurrency(item.valor_aberto);
                 return '-';
