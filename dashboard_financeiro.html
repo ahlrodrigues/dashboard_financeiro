@@ -40,11 +40,13 @@
 	        .row-has-boletos { cursor: pointer; }
 	        .boletos-child-title { margin: 6px 0 8px; padding: 0 8px; }
 	        .boletos-child-scroll { max-height: 220px; overflow: auto; padding: 0 8px 8px; }
-	        .boletos-child-table { width: 100%; border-collapse: collapse; }
-	        .boletos-child-table td { padding: 4px 8px; vertical-align: top; }
-	        .boletos-child-table tr + tr td { border-top: 1px dashed rgba(15, 23, 42, 0.10); }
-	        .boletos-child-venc { color: #6c757d; white-space: nowrap; }
-	        .boletos-child-valor { white-space: nowrap; font-variant-numeric: tabular-nums; }
+	        .boletos-row { display: grid; grid-template-columns: var(--boletos-cols, 1fr); }
+	        .boletos-row + .boletos-row { border-top: 1px dashed rgba(15, 23, 42, 0.10); margin-top: 6px; padding-top: 6px; }
+	        .boletos-cell { padding: 0 8px; }
+	        .boletos-cell-venc { color: #6c757d; white-space: nowrap; }
+	        .boletos-cell-valor { white-space: nowrap; font-variant-numeric: tabular-nums; }
+	        .boletos-total-label { color: #6c757d; font-weight: 600; }
+	        .boletos-total-value { font-weight: 700; }
 	        .app-footer {
 	            margin-top: 24px;
 	            padding: 14px 4px 0;
@@ -1035,6 +1037,7 @@ if (!(contratoId in cachedContracts)) {
         function buildBoletosDetailsHtml(contratoId, boletos, diasMin, opts = {}) {
             const loading = !!opts.loading;
             const error = opts.error ? String(opts.error) : '';
+            const cols = opts.cols || '';
             const title = `<div class="fw-semibold boletos-child-title">Boletos vencidos • Contrato ${escapeHtml(contratoId)}</div>`;
             if (loading) {
                 return `<div>${title}<div class="text-muted small px-2 pb-2"><span class="spinner-border spinner-border-sm text-primary me-2" role="status"></span>Carregando boletos...</div></div>`;
@@ -1051,24 +1054,39 @@ if (!(contratoId in cachedContracts)) {
 
             // Layout alinhado às colunas: vencimento embaixo de "Vencimento" e valor embaixo de "Valor em aberto".
             // A tabela de Suspensos tem 8 colunas; aqui repetimos 8 <td> e preenchermos só as colunas 6 e 7.
+            let total = 0;
             const rows = vencidos.map((b) => {
                 const venc = formatDateOnly(b?.vencimento);
                 const valor = (b && (b.valor ?? b.valor_aberto ?? b.valor_em_aberto));
                 const valorFmt = (valor !== null && valor !== undefined) ? formatCurrency(valor) : '-';
+                if (Number.isFinite(Number(valor))) total += Number(valor);
                 return `
-                    <tr class="small">
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td class="boletos-child-venc">${escapeHtml(venc)}</td>
-                        <td class="boletos-child-valor">${escapeHtml(valorFmt)}</td>
-                        <td></td>
-                    </tr>
+                    <div class="boletos-row small">
+                        <div class="boletos-cell"></div>
+                        <div class="boletos-cell"></div>
+                        <div class="boletos-cell"></div>
+                        <div class="boletos-cell"></div>
+                        <div class="boletos-cell"></div>
+                        <div class="boletos-cell boletos-cell-venc">${escapeHtml(venc)}</div>
+                        <div class="boletos-cell boletos-cell-valor">${escapeHtml(valorFmt)}</div>
+                        <div class="boletos-cell"></div>
+                    </div>
                 `;
             }).join('');
-            return `<div>${title}<div class="boletos-child-scroll"><table class="boletos-child-table">${rows}</table></div></div>`;
+            const totalRow = `
+                <div class="boletos-row small">
+                    <div class="boletos-cell"></div>
+                    <div class="boletos-cell"></div>
+                    <div class="boletos-cell"></div>
+                    <div class="boletos-cell"></div>
+                    <div class="boletos-cell"></div>
+                    <div class="boletos-cell boletos-total-label">Total:</div>
+                    <div class="boletos-cell boletos-cell-valor boletos-total-value">${escapeHtml(formatCurrency(total))}</div>
+                    <div class="boletos-cell"></div>
+                </div>
+            `;
+            const style = cols ? ` style="--boletos-cols: ${escapeHtml(cols)}"` : '';
+            return `<div${style}>${title}<div class="boletos-child-scroll">${rows}${totalRow}</div></div>`;
         }
 
         async function fetchBoletosDoContrato(contratoId) {
@@ -1097,6 +1115,11 @@ if (!(contratoId in cachedContracts)) {
                 const row = tableSuspensos.row(tr);
                 if (!row) return;
 
+                const ths = Array.from(document.querySelectorAll('#tabelaSuspensos thead th'));
+                const cols = ths.length
+                    ? ths.map(th => `${Math.max(40, Math.round(th.getBoundingClientRect().width))}px`).join(' ')
+                    : '';
+
                 if (row.child && row.child.isShown && row.child.isShown()) {
                     row.child.hide();
                     tr.classList.remove('shown');
@@ -1104,7 +1127,7 @@ if (!(contratoId in cachedContracts)) {
                 }
 
                 const diasMin = Math.max(1, parseInt(document.getElementById('filterDiasVencido')?.value || '60', 10));
-                row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { loading: true })).show();
+                row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { loading: true, cols })).show();
                 tr.classList.add('shown');
 
                 try {
@@ -1114,9 +1137,9 @@ if (!(contratoId in cachedContracts)) {
                         boletos = await fetchBoletosDoContrato(contratoId);
                         if (item) item.boletos = boletos;
                     }
-                    row.child(buildBoletosDetailsHtml(contratoId, boletos, diasMin)).show();
+                    row.child(buildBoletosDetailsHtml(contratoId, boletos, diasMin, { cols })).show();
                 } catch (err) {
-                    row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { error: err?.message || err })).show();
+                    row.child(buildBoletosDetailsHtml(contratoId, [], diasMin, { error: err?.message || err, cols })).show();
                 }
             });
         }
