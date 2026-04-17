@@ -269,7 +269,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     return v
         return None
 
-    def _fetch_ocorrencias_contrato(self, contrato_id, nocache=False, timeout=40):
+    def _fetch_ocorrencias_contrato(self, contrato_id, nocache=False, timeout=40, max_total_seconds=20):
         contrato_id = str(contrato_id or "").strip()
         if not contrato_id:
             return [], []
@@ -281,6 +281,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 return cached.get("items") or [], cached.get("attempts") or []
 
         attempts = []
+        started = time.time()
         payloads = [
             {"contrato": contrato_id},
             {"contrato_id": contrato_id},
@@ -288,12 +289,18 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         ]
 
         for ep in REQUERER_LOOKUP_ENDPOINTS:
+            if max_total_seconds is not None and (time.time() - started) > float(max_total_seconds):
+                attempts.append({"endpoint": str(ep), "error": "TimeLimit: max_total_seconds"})
+                break
             ep = str(ep or "").strip()
             if not ep:
                 continue
             if not ep.startswith("/"):
                 ep = "/" + ep
             for pld in payloads:
+                if max_total_seconds is not None and (time.time() - started) > float(max_total_seconds):
+                    attempts.append({"endpoint": ep, "payload_keys": sorted(list(pld.keys())), "error": "TimeLimit: max_total_seconds"})
+                    break
                 try:
                     data = self._list_ura(ep, pld, timeout=timeout)
                     lst = self._extract_list(data)
@@ -307,11 +314,12 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         ProxyHandler.ocorrencias_cache[key] = {"ts": now, "items": [], "attempts": attempts}
         return [], attempts
 
-    def _fetch_ocorrencia_por_id(self, oc_id, nocache=False, timeout=40):
+    def _fetch_ocorrencia_por_id(self, oc_id, nocache=False, timeout=40, max_total_seconds=20):
         oc_id = str(oc_id or "").strip()
         if not oc_id:
             return None, []
         attempts = []
+        started = time.time()
 
         id_payloads = [
             {"os_id": oc_id},
@@ -336,12 +344,18 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         endpoints = OC_LOOKUP_ENDPOINTS if isinstance(OC_LOOKUP_ENDPOINTS, list) and OC_LOOKUP_ENDPOINTS else REQUERER_LOOKUP_ENDPOINTS
         for ep in endpoints:
+            if max_total_seconds is not None and (time.time() - started) > float(max_total_seconds):
+                attempts.append({"endpoint": str(ep), "error": "TimeLimit: max_total_seconds"})
+                break
             ep = str(ep or "").strip()
             if not ep:
                 continue
             if not ep.startswith("/"):
                 ep = "/" + ep
             for pld in id_payloads:
+                if max_total_seconds is not None and (time.time() - started) > float(max_total_seconds):
+                    attempts.append({"endpoint": ep, "payload_keys": sorted(list(pld.keys())), "error": "TimeLimit: max_total_seconds"})
+                    break
                 try:
                     data = self._list_ura(ep, pld, timeout=timeout)
                     lst = self._extract_list(data)
@@ -1155,7 +1169,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "message": "Parâmetro obrigatório ausente: contrato"})
                 return
             try:
-                items, attempts = self._fetch_ocorrencias_contrato(contrato_id, nocache=nocache, timeout=40)
+                started = time.time()
+                items, attempts = self._fetch_ocorrencias_contrato(contrato_id, nocache=nocache, timeout=10, max_total_seconds=18)
                 oc = self._pick_ocorrencia_requerer(items)
                 responsavel = None
                 oc_id = None
@@ -1231,6 +1246,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         },
                         "sample_count": len(items),
                         "sample_summary": [_summarize_oc(x) for x in (items[:5] if isinstance(items, list) else [])],
+                        "seconds": round(time.time() - started, 2),
                     }
                 self._send_json(200, payload)
             except Exception as e:
@@ -1250,11 +1266,12 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "message": "Parâmetro obrigatório ausente: id"})
                 return
             try:
-                item, attempts = self._fetch_ocorrencia_por_id(oc_id, nocache=nocache, timeout=40)
+                started = time.time()
+                item, attempts = self._fetch_ocorrencia_por_id(oc_id, nocache=nocache, timeout=10, max_total_seconds=18)
                 if not item:
                     payload = {"ok": True, "id": str(oc_id), "found": False}
                     if debug:
-                        payload["debug"] = {"attempts": attempts}
+                        payload["debug"] = {"attempts": attempts, "seconds": round(time.time() - started, 2)}
                     self._send_json(200, payload)
                     return
 
@@ -1286,7 +1303,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 }
                 payload = {"ok": True, "id": str(oc_id), "found": True, "summary": summary}
                 if debug:
-                    payload["debug"] = {"attempts": attempts}
+                    payload["debug"] = {"attempts": attempts, "seconds": round(time.time() - started, 2)}
                 self._send_json(200, payload)
             except Exception as e:
                 self._send_json(502, {"ok": False, "message": "Falha ao consultar ocorrência no SGP.", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
