@@ -1,6 +1,27 @@
 {
   "name": "dashboard-financeiro",
   "version": "1.0.0",
-  "description": "Dashboard para acompanhamento de contratos cancelados com comodato ativo",
-  "repository": "git@github.com:ahlrodrigues/dashboard_financeir.git"
+  "description": "Dashboard para acompanhamento de contratos cancelados com comodato ativo e suspensos com boletos vencidos",
+  "repository": "git@github.com:ahlrodrigues/dashboard_financeiro.git",
+  "url_base": "https://sgp.net4you.com.br",
+  "basic_auth": {
+    "username": "robo",
+    "password": "CHANGE_ME"
+  },
+  "app_token_auth": {
+    "app": "financeiro",
+    "token": "CHANGE_ME"
+  },
+  "auth": {
+    "enabled": true,
+    "admin_group": "financeiro",
+    "jwt_secret": "CHANGE_ME",
+    "token_ttl_seconds": 43200
+  },
+  "dashboard": {
+    "suspended_status_codes": [],
+    "suspended_status_tokens": [
+      "SUSP"
+    ]
+  }
 }

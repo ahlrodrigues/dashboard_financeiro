@@ -79,6 +79,32 @@
     </style>
 </head>
 <body>
+    <div id="loginScreen" class="position-fixed top-0 start-0 w-100 h-100 bg-light d-none" style="z-index: 2000;">
+        <div class="h-100 d-flex align-items-center justify-content-center p-3">
+            <div class="card" style="max-width: 420px; width: 100%;">
+                <div class="card-body p-4">
+                    <h4 class="mb-1">Acesso restrito</h4>
+                    <div class="text-muted small mb-3">Entre com seu usuário do SGP (grupo: financeiro).</div>
+                    <form id="loginForm" autocomplete="off">
+                        <div class="mb-3">
+                            <label for="loginUsername" class="form-label">Usuário</label>
+                            <input id="loginUsername" class="form-control" type="text" inputmode="text" autocomplete="username" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="loginPassword" class="form-label">Senha</label>
+                            <input id="loginPassword" class="form-control" type="password" autocomplete="current-password" required>
+                        </div>
+                        <div id="loginError" class="text-danger small mb-3 d-none"></div>
+                        <div class="d-grid">
+                            <button id="loginButton" class="btn btn-primary" type="submit">Entrar</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="mainApp" style="display:none;">
     <div class="container-fluid py-4">
         <div class="row mb-4">
             <div class="col">
@@ -318,11 +344,120 @@
 	            }
 	            const t = setTimeout(() => ctrl.abort(), timeoutMs);
 	            try {
-	                return await fetch(url, { ...options, signal: ctrl.signal });
+                    const headers = new Headers(options?.headers || {});
+                    const token = getAuthToken();
+                    const path = String(url || '');
+                    const isAuthLogin = path.includes('/api/auth/login');
+                    if (token && !headers.has('Authorization')) {
+                        headers.set('Authorization', `Bearer ${token}`);
+                    }
+                    const resp = await fetch(url, { ...options, headers, signal: ctrl.signal });
+                    if (resp.status === 401 && !isAuthLogin) {
+                        showLoginScreen('Sessão expirada. Faça login novamente.');
+                    }
+	                return resp;
 	            } finally {
 	                clearTimeout(t);
 	            }
 	        }
+
+        function getAuthToken() {
+            return sessionStorage.getItem('dashboard_token') || null;
+        }
+
+        function setAuthToken(token) {
+            sessionStorage.setItem('dashboard_token', String(token || ''));
+        }
+
+        function clearAuthToken() {
+            sessionStorage.removeItem('dashboard_token');
+            sessionStorage.removeItem('dashboard_user');
+        }
+
+        function setStoredUser(user) {
+            try {
+                sessionStorage.setItem('dashboard_user', JSON.stringify(user || null));
+            } catch {}
+        }
+
+        function showMainApp() {
+            const app = document.getElementById('mainApp');
+            if (app) app.style.display = '';
+        }
+
+        function hideMainApp() {
+            const app = document.getElementById('mainApp');
+            if (app) app.style.display = 'none';
+        }
+
+        function showLoginScreen(message = '') {
+            hideMainApp();
+            const el = document.getElementById('loginScreen');
+            if (el) el.classList.remove('d-none');
+            const err = document.getElementById('loginError');
+            if (err) {
+                const msg = String(message || '').trim();
+                if (msg) {
+                    err.textContent = msg;
+                    err.classList.remove('d-none');
+                } else {
+                    err.textContent = '';
+                    err.classList.add('d-none');
+                }
+            }
+            const u = document.getElementById('loginUsername');
+            if (u) u.focus();
+        }
+
+        function hideLoginScreen() {
+            const el = document.getElementById('loginScreen');
+            if (el) el.classList.add('d-none');
+            const err = document.getElementById('loginError');
+            if (err) {
+                err.textContent = '';
+                err.classList.add('d-none');
+            }
+        }
+
+        async function checkAuth() {
+            const token = getAuthToken();
+            if (!token) return null;
+            try {
+                const resp = await fetchWithTimeout('/api/auth/me', { cache: 'no-store' }, 20000);
+                if (!resp.ok) {
+                    clearAuthToken();
+                    return null;
+                }
+                const data = await resp.json();
+                if (data && data.ok && data.user) {
+                    setStoredUser(data.user);
+                    return data.user;
+                }
+                clearAuthToken();
+                return null;
+            } catch {
+                clearAuthToken();
+                return null;
+            }
+        }
+
+        async function doLogin(username, password) {
+            const resp = await fetchWithTimeout('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password }),
+                cache: 'no-store'
+            }, 30000);
+            const text = await resp.text();
+            let data = null;
+            try { data = JSON.parse(text); } catch { data = { ok: false, message: text }; }
+            if (!resp.ok || !data?.ok || !data?.token) {
+                throw new Error(data?.message || 'Falha no login.');
+            }
+            setAuthToken(data.token);
+            setStoredUser(data.user || null);
+            return data.user || null;
+        }
 
         function formatDate(dateStr) {
             if (!dateStr) return '-';
@@ -1357,28 +1492,80 @@ if (!(contratoId in cachedContracts)) {
             inicializar();
             loadVersion();
 
-            document.getElementById('tab-suspensos-tab').addEventListener('shown.bs.tab', () => {
-                if (!suspensosLoadedOnce) loadSuspensos(false);
-                updateHashFromActiveTab();
-                const progressBadge = document.getElementById('progressBadge');
-                if (progressBadge) progressBadge.style.display = 'none';
-            });
+            function startApp(forceUpdate = false) {
+                if (window.__financeiroAppStarted) {
+                    if (forceUpdate) refreshActiveTab(true);
+                    return;
+                }
+                window.__financeiroAppStarted = true;
 
-            document.getElementById('tab-cancelados-tab').addEventListener('shown.bs.tab', () => {
-                updateHashFromActiveTab();
-            });
+                document.getElementById('tab-suspensos-tab').addEventListener('shown.bs.tab', () => {
+                    if (!suspensosLoadedOnce) loadSuspensos(false);
+                    updateHashFromActiveTab();
+                    const progressBadge = document.getElementById('progressBadge');
+                    if (progressBadge) progressBadge.style.display = 'none';
+                });
 
-            const initialHash = (window.location.hash || '').toLowerCase();
-            if (initialHash === '#suspensos') {
-                setActiveTabFromHash();
-                // o shown.bs.tab acima dispara o loadSuspensos(false)
-            } else {
-                // default: carrega Cancelados sem iniciar o fluxo dos Suspensos
-                if (initialHash === '#cancelados') setActiveTabFromHash();
-                loadCancelados(false);
+                document.getElementById('tab-cancelados-tab').addEventListener('shown.bs.tab', () => {
+                    updateHashFromActiveTab();
+                });
+
+                const initialHash = (window.location.hash || '').toLowerCase();
+                if (initialHash === '#suspensos') {
+                    setActiveTabFromHash();
+                    loadSuspensos(Boolean(forceUpdate));
+                } else {
+                    if (initialHash === '#cancelados') setActiveTabFromHash();
+                    loadCancelados(Boolean(forceUpdate));
+                }
+
+                // refresh automático só com sessão válida
+                setInterval(() => {
+                    if (getAuthToken()) refreshActiveTab(true);
+                }, 5 * 60 * 1000);
             }
+
+            (async () => {
+                const user = await checkAuth();
+                if (!user) {
+                    showLoginScreen();
+                    return;
+                }
+                hideLoginScreen();
+                showMainApp();
+                startApp(false);
+            })();
+
+            const form = document.getElementById('loginForm');
+            if (form) {
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const btn = document.getElementById('loginButton');
+                    const err = document.getElementById('loginError');
+                    if (err) { err.textContent = ''; err.classList.add('d-none'); }
+                    if (btn) btn.disabled = true;
+                    try {
+                        const username = String(document.getElementById('loginUsername')?.value || '').trim();
+                        const password = String(document.getElementById('loginPassword')?.value || '');
+                        await doLogin(username, password);
+                        hideLoginScreen();
+                        showMainApp();
+                        startApp(true);
+                    } catch (e2) {
+                        if (err) {
+                            err.textContent = e2?.message || String(e2 || 'Falha no login.');
+                            err.classList.remove('d-none');
+                        } else {
+                            alert(e2?.message || String(e2 || 'Falha no login.'));
+                        }
+                        clearAuthToken();
+                    } finally {
+                        if (btn) btn.disabled = false;
+                    }
+                });
+            }
+
         });
-        setInterval(() => refreshActiveTab(true), 5 * 60 * 1000);
     </script>
     <footer class="app-footer" aria-label="Rodape">
         <div class="footer-card">
@@ -1388,5 +1575,7 @@ if (!(contratoId in cachedContracts)) {
             </div>
         </div>
     </footer>
+    </div>
+    </div>
 </body>
 </html>

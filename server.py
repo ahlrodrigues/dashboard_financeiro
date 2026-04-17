@@ -12,6 +12,10 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import unicodedata
 from socketserver import ThreadingMixIn
 import re
+import base64
+import hashlib
+import hmac
+import secrets
 
 SGP_BASE = 'https://sgp.net4you.com.br/api'
 AUTH = ('robo', 'Ox(?YMae?0V3V#}HIGcF')
@@ -19,6 +23,10 @@ PORT = 8000
 
 APP_TOKEN = '37ab7243-9e9c-45bc-a393-e2ccbf76eff2'
 APP_NAME = 'financeiro'
+AUTH_ENABLED = True
+AUTH_JWT_SECRET = "dashboard-secret-change-in-production"
+AUTH_ADMIN_GROUP = "financeiro"
+AUTH_TOKEN_TTL_SECONDS = 12 * 60 * 60
 SUSPENDED_STATUS_CODES = set()
 SUSPENDED_STATUS_TOKENS = ["SUSP"]
 try:
@@ -43,6 +51,19 @@ try:
             AUTH = (user, pwd)
         APP_TOKEN = cfg.get('app_token_auth', {}).get('token', APP_TOKEN)
         APP_NAME = cfg.get('app_token_auth', {}).get('app', APP_NAME)
+        auth_cfg = cfg.get('auth') or {}
+        try:
+            AUTH_ENABLED = bool(auth_cfg.get('enabled', AUTH_ENABLED))
+        except Exception:
+            pass
+        AUTH_JWT_SECRET = str(auth_cfg.get('jwt_secret') or AUTH_JWT_SECRET)
+        AUTH_ADMIN_GROUP = str(auth_cfg.get('admin_group') or AUTH_ADMIN_GROUP)
+        try:
+            ttl = int(auth_cfg.get('token_ttl_seconds') or AUTH_TOKEN_TTL_SECONDS)
+            if ttl > 0:
+                AUTH_TOKEN_TTL_SECONDS = ttl
+        except Exception:
+            pass
         codes = cfg.get('dashboard', {}).get('suspended_status_codes') or []
         for c in codes:
             try:
@@ -72,6 +93,46 @@ def _read_local_version():
             txt = f.read()
         m = re.search(r'^\s*VERSION\s*=\s*"([^"]+)"\s*$', txt, re.MULTILINE)
         return m.group(1) if m else None
+    except Exception:
+        return None
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+def _b64url_decode(text: str) -> bytes:
+    s = str(text or "").strip()
+    if not s:
+        return b""
+    pad = "=" * ((4 - (len(s) % 4)) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("utf-8"))
+
+def _create_simple_jwt(payload: dict, secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    sig = hmac.new(str(secret).encode("utf-8"), signing_input, hashlib.sha256).digest()
+    return f"{header_b64}.{payload_b64}.{_b64url_encode(sig)}"
+
+def _verify_simple_jwt(token: str, secret: str):
+    try:
+        parts = str(token or "").split(".")
+        if len(parts) != 3:
+            return None
+        header_b64, payload_b64, sig_b64 = parts
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        expected_sig = hmac.new(str(secret).encode("utf-8"), signing_input, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected_sig, _b64url_decode(sig_b64)):
+            return None
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8") or "{}")
+        exp = payload.get("exp")
+        if exp is not None:
+            try:
+                if int(exp) < int(time.time()):
+                    return None
+            except Exception:
+                return None
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 
@@ -662,21 +723,107 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
 
+    def _extract_bearer_token(self):
+        auth = self.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return None
+
+    def _is_protected_path(self, path_only: str) -> bool:
+        if not AUTH_ENABLED:
+            return False
+        p = (path_only or "").strip() or "/"
+        if p.startswith("/api/"):
+            if p.startswith("/api/auth/"):
+                return False
+            if p in ("/api/health", "/api/buildinfo"):
+                return False
+            return True
+        if p in ("/comodato/list", "/comodatoitens/list", "/contrato", "/contrato/"):
+            return True
+        return False
+
+    def _require_auth(self):
+        token = self._extract_bearer_token()
+        if not token:
+            self._send_json(401, {"ok": False, "message": "Autenticação necessária."})
+            return None
+        payload = _verify_simple_jwt(token, AUTH_JWT_SECRET)
+        if not payload:
+            self._send_json(401, {"ok": False, "message": "Token inválido ou expirado."})
+            return None
+        return payload
+
+    def _read_json_body(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except Exception:
+            content_length = 0
+        if content_length <= 0:
+            return {}
+        raw = self.rfile.read(content_length) or b""
+        try:
+            return json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            return None
+
+    def _fetch_sgp_user_info(self, username: str, password: str, timeout=30):
+        url = f"{SGP_BASE}/auth/info/"
+        resp = requests.get(
+            url,
+            auth=(username, password),
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                raise RuntimeError("Credenciais inválidas")
+            raise RuntimeError(f"Erro ao autenticar no SGP: HTTP {resp.status_code}")
+        try:
+            return resp.json()
+        except Exception:
+            raise RuntimeError("Resposta inválida do SGP (esperado JSON)")
+
+    def _user_has_admin_group(self, user_info: dict) -> bool:
+        target = str(AUTH_ADMIN_GROUP or "").strip().lower()
+        if not target:
+            return True
+        grupos = user_info.get("grupos") if isinstance(user_info, dict) else None
+        if not isinstance(grupos, list):
+            return False
+        for g in grupos:
+            desc = ""
+            try:
+                desc = str((g or {}).get("descricao") or "").strip().lower()
+            except Exception:
+                desc = ""
+            if desc == target:
+                return True
+        return False
+
     def do_GET(self):
+        path_only = urlparse(self.path).path
         if self.path == '/favicon.ico':
             self.send_response(204)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             return
 
-        if self.path.startswith('/api/buildinfo'):
+        if path_only == "/api/auth/me":
+            auth = self._require_auth()
+            if not auth:
+                return
+            self._send_json(200, {"ok": True, "user": {"username": auth.get("sub"), "nome": auth.get("nome"), "email": auth.get("email"), "isAdmin": bool(auth.get("isAdmin"))}})
+            return
+
+        if path_only.startswith('/api/buildinfo'):
             self._send_json(200, self._buildinfo())
             return
 
-        if self.path == '/version.py':
+        if path_only == '/version.py':
             base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
             fp = os.path.join(base_dir, 'version.py')
             if not os.path.exists(fp):
@@ -695,7 +842,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if self.path.startswith('/api/health'):
+        if path_only.startswith('/api/health'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             check = params.get('check', ['0'])[0] == '1'
@@ -705,7 +852,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json(200, payload)
             return
 
-        if self.path.startswith('/api/boletos'):
+        if self._is_protected_path(path_only):
+            if not self._require_auth():
+                return
+
+        if path_only.startswith('/api/boletos'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             contrato_id = (params.get('contrato', [''])[0] or '').strip()
@@ -744,7 +895,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(502, {"error": "Falha ao consultar boletos", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
             return
 
-        if self.path.startswith('/api/contratos-suspensos-boletos'):
+        if path_only.startswith('/api/contratos-suspensos-boletos'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             dias_min = 30
@@ -985,7 +1136,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(502, {"error": "Falha ao consultar SGP", "details": details, "diagnostic": self._diagnose_sgp()})
             return
 
-        if self.path.startswith('/comodato/list'):
+        if path_only.startswith('/comodato/list'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             ini = params.get('data_cadastro_ini', [''])[0]
@@ -998,7 +1149,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(resp.content)
             return
-        elif self.path.startswith('/comodatoitens/list'):
+        elif path_only.startswith('/comodatoitens/list'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             cid = params.get('comodato_id', [''])[0]
@@ -1009,7 +1160,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             self.wfile.write(resp.content)
-        elif self.path == '/' or self.path == '/index.html' or self.path == '/dashboard_financeiro.html' or self.path == '/test.html':
+        elif path_only == '/' or path_only == '/index.html' or path_only == '/dashboard_financeiro.html' or path_only == '/test.html':
             self.path = '/dashboard_financeiro.html'
             super().do_GET()
         else:
@@ -1018,6 +1169,56 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b'Not Found')
 
     def do_POST(self):
+        path_only = urlparse(self.path).path
+
+        if path_only == "/api/auth/login":
+            body = self._read_json_body()
+            if body is None:
+                self._send_json(400, {"ok": False, "message": "JSON inválido no corpo da requisição."})
+                return
+            username = str((body or {}).get("username") or "").strip()
+            password = str((body or {}).get("password") or "").strip()
+            if not username or not password:
+                self._send_json(400, {"ok": False, "message": "Usuário e senha são obrigatórios."})
+                return
+            try:
+                info = self._fetch_sgp_user_info(username, password, timeout=30)
+                if not self._user_has_admin_group(info):
+                    self._send_json(403, {"ok": False, "message": f"Acesso negado. Necessário grupo '{AUTH_ADMIN_GROUP}' no SGP."})
+                    return
+                now = int(time.time())
+                payload = {
+                    "sub": str(info.get("usuario") or username),
+                    "nome": str(info.get("nome") or ""),
+                    "email": str(info.get("email") or ""),
+                    "grupos": info.get("grupos") or [],
+                    "isAdmin": True,
+                    "iat": now,
+                    "exp": now + int(AUTH_TOKEN_TTL_SECONDS),
+                    "jti": secrets.token_urlsafe(16),
+                }
+                token = _create_simple_jwt(payload, AUTH_JWT_SECRET)
+                self._send_json(200, {"ok": True, "token": token, "user": {"username": payload["sub"], "nome": payload["nome"], "email": payload["email"], "isAdmin": True}})
+            except Exception as e:
+                self._send_json(401, {"ok": False, "message": str(e) or "Falha na autenticação."})
+            return
+
+        if path_only == "/api/auth/me":
+            auth = self._require_auth()
+            if not auth:
+                return
+            self._send_json(200, {"ok": True, "user": {"username": auth.get("sub"), "nome": auth.get("nome"), "email": auth.get("email"), "isAdmin": bool(auth.get("isAdmin"))}})
+            return
+
+        if path_only == "/api/auth/logout":
+            # Stateless: apenas responde OK. O frontend limpa o token.
+            self._send_json(200, {"ok": True, "message": "Logout realizado."})
+            return
+
+        if self._is_protected_path(path_only):
+            if not self._require_auth():
+                return
+
         if self.path == '/contrato/' or self.path == '/contrato':
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length).decode('utf-8')
