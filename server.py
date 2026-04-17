@@ -327,19 +327,46 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             {"ocorrencia_id": oc_id},
             {"chamado_id": oc_id},
             {"os": oc_id},
+            {"protocolo": oc_id},
+            {"codigo": oc_id},
+            {"numero": oc_id},
+            {"num": oc_id},
             {"os_id": int(oc_id)} if oc_id.isdigit() else {"os_id": oc_id},
             {"id": int(oc_id)} if oc_id.isdigit() else {"id": oc_id},
+            {"protocolo": int(oc_id)} if oc_id.isdigit() else {"protocolo": oc_id},
+            {"codigo": int(oc_id)} if oc_id.isdigit() else {"codigo": oc_id},
+            {"numero": int(oc_id)} if oc_id.isdigit() else {"numero": oc_id},
         ]
 
         def matches(item):
             if not isinstance(item, dict):
                 return False
-            for k in ("os_id", "id", "ocorrencia_id", "chamado_id", "osId"):
+            for k in (
+                "os_id",
+                "id",
+                "ocorrencia_id",
+                "chamado_id",
+                "osId",
+                "protocolo",
+                "protocolo_id",
+                "codigo",
+                "codigo_os",
+                "os_codigo",
+                "numero",
+                "num",
+            ):
                 v = item.get(k)
                 if v is None:
                     continue
                 if str(v).strip() == oc_id:
                     return True
+            # tenta também em campos aninhados
+            inner = self._pick_first(item, ["os", "ocorrencia", "chamado", "ordem_servico", "ordemservico"])
+            if isinstance(inner, dict):
+                for k in ("id", "os_id", "protocolo", "codigo", "numero"):
+                    v = inner.get(k)
+                    if v is not None and str(v).strip() == oc_id:
+                        return True
             return False
 
         endpoints = OC_LOOKUP_ENDPOINTS if isinstance(OC_LOOKUP_ENDPOINTS, list) and OC_LOOKUP_ENDPOINTS else REQUERER_LOOKUP_ENDPOINTS
