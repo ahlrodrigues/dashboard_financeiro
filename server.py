@@ -398,6 +398,29 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         for k, v in item.items():
             if self._norm_key(k) in wanted and v not in (None, ""):
                 return v
+
+        # Alguns endpoints retornam campos como lista (ex.: [{"label":"Aberta Por:","value":"..."}])
+        for container_key in ("campos", "fields", "dados", "custom_fields", "customFields", "extras"):
+            container = item.get(container_key)
+            if isinstance(container, list):
+                for entry in container:
+                    if not isinstance(entry, dict):
+                        continue
+                    label = (
+                        entry.get("label")
+                        or entry.get("nome")
+                        or entry.get("campo")
+                        or entry.get("descricao")
+                        or entry.get("descrição")
+                        or entry.get("title")
+                        or entry.get("name")
+                    )
+                    if self._norm_key(label) in wanted:
+                        return entry.get("value") or entry.get("valor") or entry.get("text") or entry.get("conteudo")
+            if isinstance(container, dict):
+                for k, v in container.items():
+                    if self._norm_key(k) in wanted and v not in (None, ""):
+                        return v
         return None
 
     def _extract_aberta_por_from_text(self, item):

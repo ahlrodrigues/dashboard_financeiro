@@ -441,12 +441,16 @@
                     if (!contratoId) continue;
                     const td = tr.querySelector('td[data-user-name]');
                     if (!td) continue;
+                    // Retry a cada 5min se não conseguiu preencher
+                    const lastTs = Number(td.dataset.lastTryTs || '0');
                     if (td.dataset.hydrated === '1') continue;
-                    td.dataset.hydrated = '1';
+                    if (lastTs && (Date.now() - lastTs) < 5 * 60 * 1000) continue;
+                    td.dataset.lastTryTs = String(Date.now());
                     // se já tem preenchido (localStorage) não precisa consultar
                     const local = (loadRequererMap() || {})[String(contratoId)];
                     if (local) {
                         td.textContent = String(local);
+                        td.dataset.hydrated = '1';
                         continue;
                     }
                     try {
@@ -456,6 +460,7 @@
                             const map = loadRequererMap();
                             map[String(contratoId)] = String(info.responsavel);
                             saveRequererMap(map);
+                            td.dataset.hydrated = '1';
                         }
                     } catch {
                         // ignora: pode não existir OC ainda
