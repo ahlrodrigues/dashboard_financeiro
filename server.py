@@ -1127,7 +1127,49 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     responsavel = self._stringify_actor(raw_actor)
                 payload = {"ok": True, "contrato_id": str(contrato_id), "responsavel": str(responsavel or "").strip() or None, "ocorrencia_id": oc_id}
                 if debug:
-                    payload["debug"] = {"attempts": attempts, "found": bool(oc), "sample_count": len(items), "sample_head": items[:2]}
+                    def _summarize_oc(x):
+                        if not isinstance(x, dict):
+                            return {"type": type(x).__name__}
+                        # tenta extrair o "Aberta Por" mesmo sem match
+                        actor = (
+                            x.get("responsavel")
+                            or x.get("responsável")
+                            or x.get("usuario")
+                            or x.get("usuario_abertura")
+                            or x.get("criado_por")
+                            or x.get("created_by")
+                            or x.get("autor")
+                        )
+                        if actor in (None, ""):
+                            actor = self._get_any_field_by_norm(x, ["aberta por", "abertapor", "aberta_por", "abertaPor", "usuario_abertura"])
+                        if actor in (None, ""):
+                            actor = self._extract_aberta_por_from_text(x)
+                        actor = self._stringify_actor(actor)
+
+                        return {
+                            "id": x.get("os_id") or x.get("id") or x.get("ocorrencia_id") or x.get("chamado_id"),
+                            "tipo_id": x.get("ocorrenciatipo") or x.get("ocorrencia_tipo") or x.get("ocorrenciaTipo") or x.get("tipo") or x.get("tipo_id"),
+                            "tipo_label": x.get("ocorrenciatipo_descricao") or x.get("ocorrenciatipo_label") or x.get("tipo_label") or x.get("tipo_descricao"),
+                            "motivo_id": x.get("motivoos") or x.get("motivo_os") or x.get("motivo") or x.get("motivo_id"),
+                            "conteudo": x.get("conteudo") or x.get("assunto") or x.get("titulo"),
+                            "classificacao": x.get("classificacao") or x.get("classificação") or x.get("status") or x.get("situacao"),
+                            "aberta_por": actor,
+                            "keys_head": list(x.keys())[:24],
+                        }
+
+                    payload["debug"] = {
+                        "attempts": attempts,
+                        "found": bool(oc),
+                        "want": {
+                            "conteudo": REQUERER_CONTEUDO,
+                            "ocorrenciatipo": REQUERER_OCORRENCIA_TIPO,
+                            "motivoos": REQUERER_MOTIVO_OS,
+                            "classificacao_value": REQUERER_CLASSIFICACAO_VALUE,
+                            "lookup_endpoints": REQUERER_LOOKUP_ENDPOINTS,
+                        },
+                        "sample_count": len(items),
+                        "sample_summary": [_summarize_oc(x) for x in (items[:5] if isinstance(items, list) else [])],
+                    }
                 self._send_json(200, payload)
             except Exception as e:
                 self._send_json(502, {"ok": False, "message": "Falha ao consultar ocorrências no SGP.", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
