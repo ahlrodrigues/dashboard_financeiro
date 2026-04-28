@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import traceback
 
 SGP_BASE = 'https://sgp.net4you.com.br/api'
 AUTH = ('robo', 'Ox(?YMae?0V3V#}HIGcF')
@@ -238,6 +239,42 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     TITULOS_TTL_SECONDS = 300
     ocorrencias_cache = {}
     OCORRENCIAS_TTL_SECONDS = 120
+
+    def _sanitize_for_log(self, value):
+        secret_keys = {"token", "password", "passwd", "senha", "authorization", "auth"}
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                key_norm = str(k or "").strip().lower()
+                if key_norm in secret_keys:
+                    out[k] = "***"
+                else:
+                    out[k] = self._sanitize_for_log(v)
+            return out
+        if isinstance(value, list):
+            return [self._sanitize_for_log(v) for v in value]
+        return value
+
+    def _log_requerer_diag(self, stage, payload):
+        try:
+            entry = {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": "requerer_diag",
+                "stage": str(stage or "").strip() or "unknown",
+                "data": self._sanitize_for_log(payload),
+            }
+            print(json.dumps(entry, ensure_ascii=False), flush=True)
+        except Exception:
+            print(
+                json.dumps({
+                    "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "kind": "requerer_diag",
+                    "stage": "logger_error",
+                    "data": {"error": traceback.format_exc(limit=1)},
+                }, ensure_ascii=False),
+                flush=True,
+            )
+
     @classmethod
     def _cleanup_auth_sessions(cls):
         now = int(time.time())
@@ -2061,6 +2098,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
             try:
                 auth_override = self._get_auth_override_from_auth_payload(auth)
+                self._log_requerer_diag("before_post", {
+                    "contrato": contrato,
+                    "requested_by": requested_by,
+                    "sgp_auth_user": auth_override[0] if isinstance(auth_override, tuple) and len(auth_override) else (AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None),
+                    "path": "/ura/chamado/",
+                    "payload": payload,
+                })
                 resp, _mode = self._post_ura("/ura/chamado/", payload, timeout=40, auth_override=auth_override)
                 # repassar status e tentar decodificar JSON
                 content_type = (resp.headers.get("Content-Type") or "").lower()
@@ -2075,6 +2119,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         out = resp.json()
                     except Exception:
                         out = {"raw": (resp.text or "")[:500]}
+                self._log_requerer_diag("after_post", {
+                    "contrato": contrato,
+                    "path": "/ura/chamado/",
+                    "http_status": resp.status_code,
+                    "content_type": content_type,
+                    "response": out,
+                })
                 if resp.status_code != 200:
                     self._send_json(resp.status_code, {"ok": False, "message": "Falha ao criar ocorrência no SGP.", "sgp": out})
                     return
@@ -2091,6 +2142,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         sleep_seconds=0.8,
                     )
                 if not confirmed_item and not created_ok:
+                    self._log_requerer_diag("confirm_failed", {
+                        "contrato": contrato,
+                        "created_ok": created_ok,
+                        "created_id": created_id,
+                        "confirm_attempts": confirm_attempts,
+                        "response": out,
+                    })
                     self._send_json(502, {
                         "ok": False,
                         "message": "SGP respondeu sem confirmar a criação da ocorrência.",
@@ -2109,6 +2167,15 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                         or confirmed_item.get("chamado_id")
                     )
                     confirmed_actor = self._extract_actor_from_item(confirmed_item)
+                self._log_requerer_diag("confirm_success", {
+                    "contrato": contrato,
+                    "created_ok": created_ok,
+                    "created_id": created_id,
+                    "confirmed": bool(confirmed_item),
+                    "confirmed_id": confirmed_id,
+                    "confirmed_actor": confirmed_actor,
+                    "confirm_attempts": confirm_attempts,
+                })
                 self._send_json(200, {
                     "ok": True,
                     "message": "Ocorrência criada.",
@@ -2120,6 +2187,12 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     "sgp_auth_user": AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None,
                 })
             except Exception as e:
+                self._log_requerer_diag("exception", {
+                    "contrato": contrato,
+                    "requested_by": requested_by,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                })
                 self._send_json(502, {"ok": False, "message": "Falha ao criar ocorrência.", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
             return
 
