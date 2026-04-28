@@ -264,7 +264,7 @@
 	                                        <th>Dias atraso</th>
 	                                        <th>Vencimento</th>
 	                                        <th>Valor em aberto</th>
-	                                        <th>Usuário</th>
+	                                        <th>Criado por</th>
 	                                        <th>Detalhes</th>
 	                                    </tr>
 	                                </thead>
@@ -276,9 +276,6 @@
 	                                    </tr>
 	                                </tbody>
 	                            </table>
-                        </div>
-                        <div class="small text-muted mt-3">
-                            Observação: esta aba consome a API local <code>/api/contratos-suspensos-boletos</code> (servida por <code>server.py</code> na porta 8000). A chamada direta ao SGP via browser pode falhar por CORS/credenciais.
                         </div>
                     </div>
                 </div>
@@ -397,9 +394,29 @@
             return String(u?.username || u?.nome || '').trim();
         }
 
+        function normalizeRequererEntry(value) {
+            if (!value) return null;
+            if (typeof value === 'string') {
+                const createdBy = String(value).trim();
+                return createdBy ? { createdBy, hasOc: true, ocorrenciaId: null } : null;
+            }
+            if (typeof value !== 'object') return null;
+            const createdBy = String(value.createdBy || value.responsavel || value.user || '').trim();
+            const ocorrenciaIdRaw = value.ocorrenciaId ?? value.ocorrencia_id ?? value.id ?? null;
+            const ocorrenciaId = (ocorrenciaIdRaw === null || ocorrenciaIdRaw === undefined || String(ocorrenciaIdRaw).trim() === '') ? null : String(ocorrenciaIdRaw).trim();
+            const hasOc = value.hasOc === true || value.found === true || !!ocorrenciaId || !!createdBy;
+            return { createdBy: createdBy || '', hasOc, ocorrenciaId };
+        }
+
         function loadRequererMap() {
             try {
-                return JSON.parse(localStorage.getItem('dashboard_financeiro_requerer') || '{}') || {};
+                const raw = JSON.parse(localStorage.getItem('dashboard_financeiro_requerer') || '{}') || {};
+                const out = {};
+                for (const [key, value] of Object.entries(raw)) {
+                    const normalized = normalizeRequererEntry(value);
+                    if (normalized) out[String(key)] = normalized;
+                }
+                return out;
             } catch {
                 return {};
             }
@@ -411,6 +428,20 @@
             } catch {}
         }
 
+        function setRequererButtonState(tr, entry) {
+            if (!tr) return;
+            const btn = tr.querySelector('button[data-action="requerer"]');
+            if (!btn) return;
+            const hasOc = !!(entry && entry.hasOc);
+            btn.disabled = hasOc;
+            btn.textContent = hasOc ? 'Requerido' : 'Requerer';
+            const createdBy = String(entry?.createdBy || '').trim();
+            const ocorrenciaId = String(entry?.ocorrenciaId || '').trim();
+            btn.title = hasOc
+                ? `Ocorrência já criada${createdBy ? ` por ${createdBy}` : ''}${ocorrenciaId ? ` (ID ${ocorrenciaId})` : ''}.`
+                : '';
+        }
+
         function applyRequererMarksToSuspensosTable() {
             const map = loadRequererMap();
             const rows = Array.from(document.querySelectorAll('#tabelaSuspensosBody tr[data-contrato-id]'));
@@ -418,9 +449,9 @@
                 const contratoId = tr.getAttribute('data-contrato-id');
                 if (!contratoId) continue;
                 const td = tr.querySelector('td[data-user-name]');
-                if (!td) continue;
-                const val = map[String(contratoId)];
-                if (val) td.textContent = String(val);
+                const entry = normalizeRequererEntry(map[String(contratoId)]);
+                if (td) td.textContent = entry?.createdBy || '-';
+                setRequererButtonState(tr, entry);
             }
         }
 
@@ -447,27 +478,36 @@
                     if (lastTs && (Date.now() - lastTs) < 30 * 1000) continue;
                     td.dataset.lastTryTs = String(Date.now());
                     // se já tem preenchido (localStorage) não precisa consultar
-                    const local = (loadRequererMap() || {})[String(contratoId)];
-                    if (local) {
-                        td.textContent = String(local);
+                    const local = normalizeRequererEntry((loadRequererMap() || {})[String(contratoId)]);
+                    if (local?.hasOc) {
+                        td.textContent = local.createdBy || '-';
+                        setRequererButtonState(tr, local);
                         td.dataset.hydrated = '1';
                         continue;
                     }
                     try {
-                        if (td.textContent.trim() === '-' || !td.textContent.trim()) td.textContent = '...';
+                        if (td.textContent.trim() === '-' || !td.textContent.trim()) td.textContent = 'Consultando';
                         const info = await fetchRequererInfo(contratoId);
-                        if (info?.responsavel) {
-                            td.textContent = String(info.responsavel);
+                        const entry = normalizeRequererEntry({
+                            createdBy: info?.responsavel || '',
+                            hasOc: info?.found === true,
+                            ocorrenciaId: info?.ocorrencia_id || null,
+                        });
+                        if (entry?.hasOc) {
+                            td.textContent = entry.createdBy || '-';
                             const map = loadRequererMap();
-                            map[String(contratoId)] = String(info.responsavel);
+                            map[String(contratoId)] = entry;
                             saveRequererMap(map);
+                            setRequererButtonState(tr, entry);
                             td.dataset.hydrated = '1';
                         } else {
                             td.textContent = '-';
+                            setRequererButtonState(tr, null);
                         }
                     } catch {
                         // ignora: pode não existir OC ainda
                         td.textContent = '-';
+                        setRequererButtonState(tr, null);
                     }
                 }
             } catch {
@@ -479,7 +519,7 @@
             const normalized = String(contratoId || '').trim();
             if (!normalized) return;
             const username = getLoggedUsername();
-            const ok = confirm(`Criar ocorrência Financeiro - Negociação (140/4018) para o contrato ${normalized}?\nResponsável: ${username || '-'}`);
+            const ok = confirm(`Criar ocorrência Financeiro - Negociação para o contrato ${normalized}?\nUsuário da sessão: ${username || '-'}\nStatus: Encerrada\nClassificação: Suspenso`);
             if (!ok) return;
 
             const btn = document.querySelector(`#tabelaSuspensosBody tr[data-contrato-id="${CSS.escape(normalized)}"] button[data-action="requerer"]`);
@@ -509,16 +549,23 @@
                 // Atualiza a coluna Usuário pela fonte de verdade (SGP).
                 try {
                     const info = await fetchRequererInfo(normalized);
-                    const respName = String(info?.responsavel || '').trim();
+                    if (info?.found !== true) {
+                        throw new Error('O SGP não confirmou a ocorrência após a tentativa de gravação.');
+                    }
+                    const entry = normalizeRequererEntry({
+                        createdBy: info?.responsavel || username || '',
+                        hasOc: info?.found === true,
+                        ocorrenciaId: info?.ocorrencia_id || null,
+                    });
+                    if (!entry?.hasOc) {
+                        throw new Error('O SGP não retornou uma ocorrência válida para este contrato.');
+                    }
                     const map = loadRequererMap();
-                    map[normalized] = respName || (username || 'OK');
+                    map[normalized] = entry;
                     saveRequererMap(map);
                     applyRequererMarksToSuspensosTable();
-                } catch {
-                    const map = loadRequererMap();
-                    map[normalized] = username || 'OK';
-                    saveRequererMap(map);
-                    applyRequererMarksToSuspensosTable();
+                } catch (confirmErr) {
+                    throw new Error(confirmErr?.message || 'A ocorrência não pôde ser confirmada no SGP após a gravação.');
                 }
 
                 alert('Ocorrência criada com sucesso.');

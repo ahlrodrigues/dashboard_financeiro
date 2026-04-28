@@ -28,13 +28,17 @@ AUTH_JWT_SECRET = "dashboard-secret-change-in-production"
 AUTH_ADMIN_GROUP = "financeiro"
 AUTH_TOKEN_TTL_SECONDS = 12 * 60 * 60
 REQUERER_CONTEUDO = "Financeiro - Negociação (Suspenso)"
-REQUERER_OCORRENCIA_TIPO = 140
-REQUERER_MOTIVO_OS = 4018
+REQUERER_OCORRENCIA_TIPO = 4018
+REQUERER_MOTIVO_OS = None
 REQUERER_SETOR = 1
 REQUERER_PRIORIDADE = 2
+REQUERER_STATUS_FIELD = "status"
+REQUERER_STATUS_VALUE = "Encerrada"
+REQUERER_ENCERRAR_OS_FIELD = "encerrar_os"
+REQUERER_ENCERRAR_OS_VALUE = "1"
 # Campo/valor opcionais para "classificação" (algumas instâncias do SGP exigem/aceitam chaves diferentes).
 REQUERER_CLASSIFICACAO_FIELD = "classificacao"
-REQUERER_CLASSIFICACAO_VALUE = "suspenso"
+REQUERER_CLASSIFICACAO_VALUE = "Suspenso"
 REQUERER_LOOKUP_ENDPOINTS = [
     "/ura/ocorrencia/list/",
     "/ura/ocorrencias/list/",
@@ -98,7 +102,7 @@ try:
             pass
         try:
             v = req_cfg.get('motivoos')
-            if v is not None:
+            if v is not None and str(v).strip() != "":
                 REQUERER_MOTIVO_OS = int(v)
         except Exception:
             pass
@@ -112,6 +116,24 @@ try:
             v = req_cfg.get('os_prioridade')
             if v is not None:
                 REQUERER_PRIORIDADE = int(v)
+        except Exception:
+            pass
+        try:
+            REQUERER_STATUS_FIELD = str(req_cfg.get('status_field') or REQUERER_STATUS_FIELD).strip()
+        except Exception:
+            pass
+        try:
+            REQUERER_STATUS_VALUE = str(req_cfg.get('status_value') or REQUERER_STATUS_VALUE).strip()
+        except Exception:
+            pass
+        try:
+            REQUERER_ENCERRAR_OS_FIELD = str(req_cfg.get('encerrar_os_field') or REQUERER_ENCERRAR_OS_FIELD).strip()
+        except Exception:
+            pass
+        try:
+            v = req_cfg.get('encerrar_os_value')
+            if v is not None:
+                REQUERER_ENCERRAR_OS_VALUE = str(v).strip()
         except Exception:
             pass
         try:
@@ -207,6 +229,7 @@ def _verify_simple_jwt(token: str, secret: str):
         return None
 
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
+    auth_sessions = {}
     contrato_cache = {}
     contrato_status_cache = {}
     results_cache = {}
@@ -215,18 +238,58 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     TITULOS_TTL_SECONDS = 300
     ocorrencias_cache = {}
     OCORRENCIAS_TTL_SECONDS = 120
-    def _post_sgp(self, path, payload, timeout=60):
+    @classmethod
+    def _cleanup_auth_sessions(cls):
+        now = int(time.time())
+        expired = [key for key, session in cls.auth_sessions.items() if int((session or {}).get("exp") or 0) <= now]
+        for key in expired:
+            cls.auth_sessions.pop(key, None)
+
+    @classmethod
+    def _store_auth_session(cls, jti: str, username: str, password: str, exp: int, user_info: dict):
+        cls._cleanup_auth_sessions()
+        if not jti:
+            return
+        cls.auth_sessions[str(jti)] = {
+            "username": str(username or "").strip(),
+            "password": str(password or ""),
+            "exp": int(exp or 0),
+            "user_info": user_info if isinstance(user_info, dict) else {},
+        }
+
+    @classmethod
+    def _pop_auth_session(cls, jti: str):
+        if not jti:
+            return None
+        return cls.auth_sessions.pop(str(jti), None)
+
+    @classmethod
+    def _get_auth_session(cls, jti: str):
+        cls._cleanup_auth_sessions()
+        if not jti:
+            return None
+        session = cls.auth_sessions.get(str(jti))
+        if not session:
+            return None
+        if int((session or {}).get("exp") or 0) <= int(time.time()):
+            cls.auth_sessions.pop(str(jti), None)
+            return None
+        return session
+
+    def _post_sgp(self, path, payload, timeout=60, auth_override=None):
         url = f'{SGP_BASE}{path}'
+        basic_auth = auth_override or AUTH
         # Tenta JSON primeiro (padrão moderno), depois form-encoded (alguns endpoints do SGP aceitam melhor)
         try:
-            return requests.post(url, auth=AUTH, json=payload, timeout=timeout), "json"
+            return requests.post(url, auth=basic_auth, json=payload, timeout=timeout), "json"
         except Exception:
-            return requests.post(url, auth=AUTH, data=payload, timeout=timeout), "form"
+            return requests.post(url, auth=basic_auth, data=payload, timeout=timeout), "form"
 
-    def _post_ura(self, path, data, timeout=60):
+    def _post_ura(self, path, data, timeout=60, auth_override=None):
         url = f'{SGP_BASE}{path}'
         base = {"token": APP_TOKEN, "app": APP_NAME}
         base.update(data or {})
+        basic_auth = auth_override or AUTH
 
         headers = {
             "Accept": "application/json, text/plain, */*",
@@ -238,11 +301,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         # URA (conforme Postman) costuma usar form-data; tentamos multipart primeiro.
         try:
-            resp = requests.post(url, files=as_files(base), headers=headers, timeout=timeout, allow_redirects=False)
+            resp = requests.post(url, auth=basic_auth, files=as_files(base), headers=headers, timeout=timeout, allow_redirects=False)
             return resp, "multipart"
         except Exception:
             # fallback: x-www-form-urlencoded
-            resp = requests.post(url, data=base, headers=headers, timeout=timeout, allow_redirects=False)
+            resp = requests.post(url, auth=basic_auth, data=base, headers=headers, timeout=timeout, allow_redirects=False)
             return resp, "urlencoded"
 
     def _list_ura(self, path, payload, timeout=40):
@@ -402,7 +465,12 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if not isinstance(ocorrencias, list):
             return None
         wanted_tipo = int(REQUERER_OCORRENCIA_TIPO)
-        wanted_motivo = int(REQUERER_MOTIVO_OS)
+        wanted_motivo = None
+        try:
+            if REQUERER_MOTIVO_OS is not None and str(REQUERER_MOTIVO_OS).strip() != "":
+                wanted_motivo = int(REQUERER_MOTIVO_OS)
+        except Exception:
+            wanted_motivo = None
 
         def norm_text(value):
             s = str(value or "").strip().lower()
@@ -439,7 +507,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
             if tipo is not None and tipo != wanted_tipo:
                 continue
-            if motivo is not None and motivo != wanted_motivo:
+            if wanted_motivo is not None and motivo is not None and motivo != wanted_motivo:
                 continue
             if wanted_conteudo:
                 # tenta bater com o "conteudo/assunto" e/ou com o label do tipo
@@ -490,7 +558,103 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if isinstance(value, (int, float)):
             return str(value)
         s = str(value).strip()
+        s = re.sub(r"<[^>]+>", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if s in ("", ".", "..", "...", "-", "—"):
+            return None
         return s or None
+
+    def _walk_strings(self, value):
+        if isinstance(value, str):
+            yield value
+            return
+        if isinstance(value, dict):
+            for inner in value.values():
+                yield from self._walk_strings(inner)
+            return
+        if isinstance(value, list):
+            for inner in value:
+                yield from self._walk_strings(inner)
+
+    def _find_field_by_key_tokens(self, value, token_groups):
+        groups = []
+        for group in (token_groups or []):
+            toks = tuple(self._norm_key(x) for x in group if self._norm_key(x))
+            if toks:
+                groups.append(toks)
+        if not groups:
+            return None
+
+        def scan(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    nk = self._norm_key(k)
+                    if nk and v not in (None, "", [], {}):
+                        for group in groups:
+                            if all(tok in nk for tok in group):
+                                return v
+                    got = scan(v)
+                    if got not in (None, "", [], {}):
+                        return got
+            elif isinstance(node, list):
+                for entry in node:
+                    got = scan(entry)
+                    if got not in (None, "", [], {}):
+                        return got
+            return None
+
+        return scan(value)
+
+    def _extract_actor_from_item(self, item):
+        if not isinstance(item, dict):
+            return None
+        actor = (
+            item.get("responsavel")
+            or item.get("responsável")
+            or item.get("usuario")
+            or item.get("usuario_abertura")
+            or item.get("criado_por")
+            or item.get("created_by")
+            or item.get("autor")
+        )
+        actor = self._stringify_actor(actor)
+        if actor:
+            return actor
+
+        actor = self._get_any_field_by_norm(item, [
+            "aberta por",
+            "aberto por",
+            "abertapor",
+            "abertopor",
+            "aberta_por",
+            "aberto_por",
+            "criado por",
+            "criadopor",
+            "criado_por",
+            "created by",
+            "created_by",
+            "usuario_abertura",
+            "usuariodeabertura",
+        ])
+        actor = self._stringify_actor(actor)
+        if actor:
+            return actor
+
+        actor = self._find_field_by_key_tokens(item, [
+            ("criado", "por"),
+            ("created", "by"),
+            ("aberto", "por"),
+            ("aberta", "por"),
+            ("usuario", "abertura"),
+            ("user", "create"),
+            ("author",),
+            ("autor",),
+        ])
+        actor = self._stringify_actor(actor)
+        if actor:
+            return actor
+
+        return self._extract_aberta_por_from_text(item)
 
     def _get_any_field_by_norm(self, item, wanted_norm_keys):
         if not isinstance(item, dict):
@@ -529,12 +693,25 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def _extract_aberta_por_from_text(self, item):
         if not isinstance(item, dict):
             return None
-        for v in item.values():
-            if not isinstance(v, str):
+        patterns = [
+            r"\babert[ao]\s+por\s*:\s*([^\n\r<|;]+)",
+            r"\bcriad[oa]\s+por\s*:\s*([^\n\r<|;]+)",
+            r"\bautor\s*:\s*([^\n\r<|;]+)",
+            r"\busu[aá]rio\s+de\s+abertura\s*:\s*([^\n\r<|;]+)",
+        ]
+        for raw in self._walk_strings(item):
+            if not isinstance(raw, str):
                 continue
-            m = re.search(r"\baberta\s+por\s*:\s*([^\n\r<]+)", v, re.IGNORECASE)
-            if m:
-                return m.group(1).strip()
+            text = re.sub(r"<[^>]+>", " ", raw)
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+            for pat in patterns:
+                m = re.search(pat, text, re.IGNORECASE)
+                if m:
+                    actor = self._stringify_actor(m.group(1))
+                    if actor:
+                        return actor
         return None
 
     def _post_suporte_contrato(self, contrato_id, timeout=40):
@@ -650,6 +827,67 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
         self.wfile.write(data)
+
+    def _extract_created_record_id(self, value):
+        if isinstance(value, dict):
+            for key in ("id", "os_id", "ocorrencia_id", "chamado_id", "codigo", "protocolo", "numero"):
+                got = value.get(key)
+                if got not in (None, "", 0, "0"):
+                    return str(got).strip()
+            for inner in value.values():
+                got = self._extract_created_record_id(inner)
+                if got:
+                    return got
+            return None
+        if isinstance(value, list):
+            for inner in value:
+                got = self._extract_created_record_id(inner)
+                if got:
+                    return got
+        return None
+
+    def _payload_has_business_error(self, value):
+        bad_tokens = (
+            "erro",
+            "error",
+            "invalid",
+            "invalido",
+            "inválido",
+            "nao autorizado",
+            "não autorizado",
+            "forbidden",
+            "denied",
+            "negado",
+            "falha",
+            "failure",
+            "exception",
+        )
+        if isinstance(value, dict):
+            for key in ("ok", "success", "sucesso", "created"):
+                if key in value and value.get(key) is False:
+                    return True
+            for key in ("error", "erro", "errors", "mensagem", "message", "msg", "detail", "details"):
+                got = value.get(key)
+                if self._payload_has_business_error(got):
+                    return True
+            for inner in value.values():
+                if self._payload_has_business_error(inner):
+                    return True
+            return False
+        if isinstance(value, list):
+            return any(self._payload_has_business_error(inner) for inner in value)
+        if isinstance(value, str):
+            text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()
+            return any(tok in text for tok in bad_tokens)
+        return False
+
+    def _is_successful_creation_response(self, payload):
+        created_id = self._extract_created_record_id(payload)
+        if created_id:
+            return True, created_id
+        if self._payload_has_business_error(payload):
+            return False, None
+        return False, None
 
     def _buildinfo(self):
         return {
@@ -1119,6 +1357,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if not payload:
             self._send_json(401, {"ok": False, "message": "Token inválido ou expirado."})
             return None
+        if AUTH_ENABLED:
+            session = self._get_auth_session(payload.get("jti"))
+            if not session:
+                self._send_json(401, {"ok": False, "message": "Sessão SGP expirada. Faça login novamente."})
+                return None
+            payload = dict(payload)
+            payload["_sgp_session"] = session
         return payload
 
     def _read_json_body(self):
@@ -1203,52 +1448,20 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 oc_id = None
                 if isinstance(oc, dict):
                     oc_id = oc.get("os_id") or oc.get("id") or oc.get("ocorrencia_id") or oc.get("chamado_id")
-                    raw_actor = (
-                        oc.get("responsavel")
-                        or oc.get("responsável")
-                        or oc.get("usuario")
-                        or oc.get("usuario_abertura")
-                        or oc.get("criado_por")
-                        or oc.get("created_by")
-                        or oc.get("autor")
-                    )
-                    if raw_actor in (None, ""):
-                        raw_actor = self._get_any_field_by_norm(oc, [
-                            "aberta_por",
-                            "abertaPor",
-                            "aberta por",
-                            "aberta_por_nome",
-                            "aberta_por_usuario",
-                            "aberta_por_username",
-                            "usuario_abertura",
-                            "usuario_abertura_nome",
-                            "autor",
-                            "criado_por",
-                            "criado por",
-                        ])
-                    if raw_actor in (None, ""):
-                        raw_actor = self._extract_aberta_por_from_text(oc)
-                    responsavel = self._stringify_actor(raw_actor)
-                payload = {"ok": True, "contrato_id": str(contrato_id), "responsavel": str(responsavel or "").strip() or None, "ocorrencia_id": oc_id}
+                    responsavel = self._extract_actor_from_item(oc)
+                payload = {
+                    "ok": True,
+                    "contrato_id": str(contrato_id),
+                    "found": bool(oc),
+                    "responsavel": str(responsavel or "").strip() or None,
+                    "ocorrencia_id": oc_id,
+                }
                 if debug:
                     def _summarize_oc(x):
                         if not isinstance(x, dict):
                             return {"type": type(x).__name__}
                         # tenta extrair o "Aberta Por" mesmo sem match
-                        actor = (
-                            x.get("responsavel")
-                            or x.get("responsável")
-                            or x.get("usuario")
-                            or x.get("usuario_abertura")
-                            or x.get("criado_por")
-                            or x.get("created_by")
-                            or x.get("autor")
-                        )
-                        if actor in (None, ""):
-                            actor = self._get_any_field_by_norm(x, ["aberta por", "abertapor", "aberta_por", "abertaPor", "usuario_abertura"])
-                        if actor in (None, ""):
-                            actor = self._extract_aberta_por_from_text(x)
-                        actor = self._stringify_actor(actor)
+                        actor = self._extract_actor_from_item(x)
 
                         return {
                             "id": x.get("os_id") or x.get("id") or x.get("ocorrencia_id") or x.get("chamado_id"),
@@ -1302,20 +1515,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     self._send_json(200, payload)
                     return
 
-                actor = (
-                    item.get("responsavel")
-                    or item.get("responsável")
-                    or item.get("usuario")
-                    or item.get("usuario_abertura")
-                    or item.get("criado_por")
-                    or item.get("created_by")
-                    or item.get("autor")
-                )
-                if actor in (None, ""):
-                    actor = self._get_any_field_by_norm(item, ["aberta por", "abertapor", "aberta_por", "abertaPor", "usuario_abertura"])
-                if actor in (None, ""):
-                    actor = self._extract_aberta_por_from_text(item)
-                actor = self._stringify_actor(actor)
+                actor = self._extract_actor_from_item(item)
 
                 summary = {
                     "id": item.get("os_id") or item.get("id") or item.get("ocorrencia_id") or item.get("chamado_id") or str(oc_id),
@@ -1704,6 +1904,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     self._send_json(403, {"ok": False, "message": f"Acesso negado. Necessário grupo '{AUTH_ADMIN_GROUP}' no SGP."})
                     return
                 now = int(time.time())
+                jti = secrets.token_urlsafe(16)
                 payload = {
                     "sub": str(info.get("usuario") or username),
                     "nome": str(info.get("nome") or ""),
@@ -1712,8 +1913,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     "isAdmin": True,
                     "iat": now,
                     "exp": now + int(AUTH_TOKEN_TTL_SECONDS),
-                    "jti": secrets.token_urlsafe(16),
+                    "jti": jti,
                 }
+                self._store_auth_session(jti, username, password, payload["exp"], info)
                 token = _create_simple_jwt(payload, AUTH_JWT_SECRET)
                 self._send_json(200, {"ok": True, "token": token, "user": {"username": payload["sub"], "nome": payload["nome"], "email": payload["email"], "isAdmin": True}})
             except Exception as e:
@@ -1728,7 +1930,10 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path_only == "/api/auth/logout":
-            # Stateless: apenas responde OK. O frontend limpa o token.
+            token = self._extract_bearer_token()
+            payload = _verify_simple_jwt(token, AUTH_JWT_SECRET) if token else None
+            if isinstance(payload, dict):
+                self._pop_auth_session(payload.get("jti"))
             self._send_json(200, {"ok": True, "message": "Logout realizado."})
             return
 
@@ -1760,10 +1965,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 "conteudo": str(REQUERER_CONTEUDO or "Requerimento"),
                 "observacao": observacao,
                 "ocorrenciatipo": int(REQUERER_OCORRENCIA_TIPO),
-                "motivoos": int(REQUERER_MOTIVO_OS),
                 "setor": int(REQUERER_SETOR),
                 "os_prioridade": int(REQUERER_PRIORIDADE),
             }
+            if REQUERER_MOTIVO_OS is not None and str(REQUERER_MOTIVO_OS).strip() != "":
+                payload["motivoos"] = int(REQUERER_MOTIVO_OS)
             if cliente_nome:
                 payload["contato_nome"] = cliente_nome
             if telefone:
@@ -1771,6 +1977,14 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             if requested_by:
                 # No SGP, este campo costuma aceitar o usuário/nome do responsável.
                 payload["responsavel"] = requested_by
+            status_field = str(REQUERER_STATUS_FIELD or "").strip()
+            status_value = str(REQUERER_STATUS_VALUE or "").strip()
+            if status_field and status_value:
+                payload[status_field] = status_value
+            encerrar_field = str(REQUERER_ENCERRAR_OS_FIELD or "").strip()
+            encerrar_value = str(REQUERER_ENCERRAR_OS_VALUE or "").strip()
+            if encerrar_field and encerrar_value:
+                payload[encerrar_field] = encerrar_value
 
             class_field = str(REQUERER_CLASSIFICACAO_FIELD or "").strip()
             class_value = str(REQUERER_CLASSIFICACAO_VALUE or "").strip()
@@ -1795,7 +2009,22 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 if resp.status_code != 200:
                     self._send_json(resp.status_code, {"ok": False, "message": "Falha ao criar ocorrência no SGP.", "sgp": out})
                     return
-                self._send_json(200, {"ok": True, "message": "Ocorrência criada.", "sgp": out})
+                created_ok, created_id = self._is_successful_creation_response(out)
+                if not created_ok:
+                    self._send_json(502, {
+                        "ok": False,
+                        "message": "SGP respondeu sem confirmar a criação da ocorrência.",
+                        "sgp": out,
+                        "sgp_auth_user": AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None,
+                    })
+                    return
+                self._send_json(200, {
+                    "ok": True,
+                    "message": "Ocorrência criada.",
+                    "ocorrencia_id": created_id,
+                    "sgp": out,
+                    "sgp_auth_user": AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None,
+                })
             except Exception as e:
                 self._send_json(502, {"ok": False, "message": "Falha ao criar ocorrência.", "details": {"message": f"{type(e).__name__}: {str(e)}"}})
             return
