@@ -2079,14 +2079,17 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     self._send_json(resp.status_code, {"ok": False, "message": "Falha ao criar ocorrência no SGP.", "sgp": out})
                     return
                 created_ok, created_id = self._is_successful_creation_response(out)
-                confirmed_item, confirm_attempts = self._confirm_requerer_creation(
-                    contrato,
-                    created_id=created_id,
-                    auth_override=auth_override,
-                    timeout=8,
-                    max_attempts=4,
-                    sleep_seconds=1.0,
-                )
+                confirmed_item = None
+                confirm_attempts = []
+                if not created_ok:
+                    confirmed_item, confirm_attempts = self._confirm_requerer_creation(
+                        contrato,
+                        created_id=created_id,
+                        auth_override=auth_override,
+                        timeout=4,
+                        max_attempts=2,
+                        sleep_seconds=0.8,
+                    )
                 if not confirmed_item and not created_ok:
                     self._send_json(502, {
                         "ok": False,

@@ -537,7 +537,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ contrato: normalized, cliente_nome: clienteNome })
-                }, 45000);
+                }, 90000);
 
                 const text = await resp.text();
                 let data = null;
@@ -571,7 +571,8 @@
 
                 alert('Ocorrência criada com sucesso.');
             } catch (e) {
-                alert(e?.message || String(e || 'Falha ao criar ocorrência.'));
+                const isAbort = e?.name === 'AbortError' || /aborted/i.test(String(e?.message || ''));
+                alert(isAbort ? 'A operação expirou antes da confirmação do SGP. Tente novamente.' : (e?.message || String(e || 'Falha ao criar ocorrência.')));
             } finally {
                 if (btn) {
                     btn.disabled = false;
