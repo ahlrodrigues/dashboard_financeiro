@@ -455,8 +455,9 @@
             }
         }
 
-        async function fetchRequererInfo(contratoId) {
-            const url = `/api/requerer-info?contrato=${encodeURIComponent(String(contratoId))}`;
+        async function fetchRequererInfo(contratoId, options = {}) {
+            const nocache = options?.nocache === true;
+            const url = `/api/requerer-info?contrato=${encodeURIComponent(String(contratoId))}${nocache ? '&nocache=1' : ''}`;
             const resp = await fetchWithTimeout(url, { cache: 'no-store' }, 45000);
             const text = await resp.text();
             if (!resp.ok) throw new Error(text.substring(0, 200));
@@ -548,7 +549,7 @@
 
                 // Atualiza a coluna Usuário pela fonte de verdade (SGP).
                 try {
-                    const info = await fetchRequererInfo(normalized);
+                    const info = await fetchRequererInfo(normalized, { nocache: true });
                     if (info?.found !== true) {
                         throw new Error('O SGP não confirmou a ocorrência após a tentativa de gravação.');
                     }

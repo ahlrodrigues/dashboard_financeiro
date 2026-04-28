@@ -308,8 +308,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             resp = requests.post(url, auth=basic_auth, data=base, headers=headers, timeout=timeout, allow_redirects=False)
             return resp, "urlencoded"
 
-    def _list_ura(self, path, payload, timeout=40):
-        resp, _mode = self._post_ura(path, payload, timeout=timeout)
+    def _list_ura(self, path, payload, timeout=40, auth_override=None):
+        resp, _mode = self._post_ura(path, payload, timeout=timeout, auth_override=auth_override)
         ct = (resp.headers.get("Content-Type") or "").lower()
         try:
             data = resp.json()
@@ -332,7 +332,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     return v
         return None
 
-    def _fetch_ocorrencias_contrato(self, contrato_id, nocache=False, timeout=40, max_total_seconds=20):
+    def _fetch_ocorrencias_contrato(self, contrato_id, nocache=False, timeout=40, max_total_seconds=20, auth_override=None):
         contrato_id = str(contrato_id or "").strip()
         if not contrato_id:
             return [], []
@@ -365,7 +365,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     attempts.append({"endpoint": ep, "payload_keys": sorted(list(pld.keys())), "error": "TimeLimit: max_total_seconds"})
                     break
                 try:
-                    data = self._list_ura(ep, pld, timeout=timeout)
+                    data = self._list_ura(ep, pld, timeout=timeout, auth_override=auth_override)
                     lst = self._extract_list(data)
                     if lst is None:
                         raise RuntimeError(f"URA {ep} resposta inesperada: {type(data).__name__}")
@@ -377,7 +377,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         ProxyHandler.ocorrencias_cache[key] = {"ts": now, "items": [], "attempts": attempts}
         return [], attempts
 
-    def _fetch_ocorrencia_por_id(self, oc_id, nocache=False, timeout=40, max_total_seconds=20):
+    def _fetch_ocorrencia_por_id(self, oc_id, nocache=False, timeout=40, max_total_seconds=20, auth_override=None):
         oc_id = str(oc_id or "").strip()
         if not oc_id:
             return None, []
@@ -447,7 +447,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     attempts.append({"endpoint": ep, "payload_keys": sorted(list(pld.keys())), "error": "TimeLimit: max_total_seconds"})
                     break
                 try:
-                    data = self._list_ura(ep, pld, timeout=timeout)
+                    data = self._list_ura(ep, pld, timeout=timeout, auth_override=auth_override)
                     lst = self._extract_list(data)
                     if lst is None:
                         # às vezes retorna 1 item dict
@@ -888,6 +888,57 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if self._payload_has_business_error(payload):
             return False, None
         return False, None
+
+    def _get_auth_override_from_auth_payload(self, auth_payload):
+        session = (auth_payload or {}).get("_sgp_session") if isinstance(auth_payload, dict) else None
+        if not isinstance(session, dict):
+            return None
+        username = str(session.get("username") or "").strip()
+        password = session.get("password")
+        if not username or password in (None, ""):
+            return None
+        return (username, str(password))
+
+    def _confirm_requerer_creation(self, contrato, created_id=None, auth_override=None, timeout=10, max_attempts=4, sleep_seconds=1.2):
+        contrato = str(contrato or "").strip()
+        created_id = str(created_id or "").strip()
+        if not contrato and not created_id:
+            return None, []
+
+        attempts = []
+        if contrato:
+            ProxyHandler.ocorrencias_cache.pop(contrato, None)
+
+        for idx in range(max(1, int(max_attempts))):
+            if created_id:
+                item, lookup_attempts = self._fetch_ocorrencia_por_id(
+                    created_id,
+                    nocache=True,
+                    timeout=timeout,
+                    max_total_seconds=max(timeout, 12),
+                    auth_override=auth_override,
+                )
+                attempts.append({"kind": "by_id", "attempt": idx + 1, "lookup_attempts": lookup_attempts})
+                if isinstance(item, dict):
+                    return item, attempts
+
+            if contrato:
+                items, lookup_attempts = self._fetch_ocorrencias_contrato(
+                    contrato,
+                    nocache=True,
+                    timeout=timeout,
+                    max_total_seconds=max(timeout, 12),
+                    auth_override=auth_override,
+                )
+                item = self._pick_ocorrencia_requerer(items)
+                attempts.append({"kind": "by_contract", "attempt": idx + 1, "lookup_attempts": lookup_attempts})
+                if isinstance(item, dict):
+                    return item, attempts
+
+            if idx + 1 < max_attempts:
+                time.sleep(float(sleep_seconds))
+
+        return None, attempts
 
     def _buildinfo(self):
         return {
@@ -1429,9 +1480,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path_only.startswith("/api/requerer-info"):
-            if self._is_protected_path(path_only):
-                if not self._require_auth():
-                    return
+            auth = self._require_auth() if self._is_protected_path(path_only) else None
+            if self._is_protected_path(path_only) and not auth:
+                return
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             contrato_id = (params.get("contrato", [""])[0] or "").strip()
@@ -1442,7 +1493,14 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 started = time.time()
-                items, attempts = self._fetch_ocorrencias_contrato(contrato_id, nocache=nocache, timeout=10, max_total_seconds=18)
+                auth_override = self._get_auth_override_from_auth_payload(auth)
+                items, attempts = self._fetch_ocorrencias_contrato(
+                    contrato_id,
+                    nocache=nocache,
+                    timeout=10,
+                    max_total_seconds=18,
+                    auth_override=auth_override,
+                )
                 oc = self._pick_ocorrencia_requerer(items)
                 responsavel = None
                 oc_id = None
@@ -1495,8 +1553,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         if path_only.startswith("/api/ocorrencia-info"):
             if self._is_protected_path("/api/ocorrencia-info"):
-                if not self._require_auth():
+                auth = self._require_auth()
+                if not auth:
                     return
+            else:
+                auth = None
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             oc_id = (params.get("id", [""])[0] or params.get("oc", [""])[0] or params.get("os", [""])[0] or "").strip()
@@ -1507,7 +1568,14 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 started = time.time()
-                item, attempts = self._fetch_ocorrencia_por_id(oc_id, nocache=nocache, timeout=10, max_total_seconds=18)
+                auth_override = self._get_auth_override_from_auth_payload(auth)
+                item, attempts = self._fetch_ocorrencia_por_id(
+                    oc_id,
+                    nocache=nocache,
+                    timeout=10,
+                    max_total_seconds=18,
+                    auth_override=auth_override,
+                )
                 if not item:
                     payload = {"ok": True, "id": str(oc_id), "found": False}
                     if debug:
@@ -1992,7 +2060,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 payload[class_field] = class_value
 
             try:
-                resp, _mode = self._post_ura("/ura/chamado/", payload, timeout=40)
+                auth_override = self._get_auth_override_from_auth_payload(auth)
+                resp, _mode = self._post_ura("/ura/chamado/", payload, timeout=40, auth_override=auth_override)
                 # repassar status e tentar decodificar JSON
                 content_type = (resp.headers.get("Content-Type") or "").lower()
                 out = None
@@ -2010,18 +2079,40 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     self._send_json(resp.status_code, {"ok": False, "message": "Falha ao criar ocorrência no SGP.", "sgp": out})
                     return
                 created_ok, created_id = self._is_successful_creation_response(out)
-                if not created_ok:
+                confirmed_item, confirm_attempts = self._confirm_requerer_creation(
+                    contrato,
+                    created_id=created_id,
+                    auth_override=auth_override,
+                    timeout=8,
+                    max_attempts=4,
+                    sleep_seconds=1.0,
+                )
+                if not confirmed_item and not created_ok:
                     self._send_json(502, {
                         "ok": False,
                         "message": "SGP respondeu sem confirmar a criação da ocorrência.",
                         "sgp": out,
+                        "confirm_attempts": confirm_attempts,
                         "sgp_auth_user": AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None,
                     })
                     return
+                confirmed_id = None
+                confirmed_actor = None
+                if isinstance(confirmed_item, dict):
+                    confirmed_id = (
+                        confirmed_item.get("os_id")
+                        or confirmed_item.get("id")
+                        or confirmed_item.get("ocorrencia_id")
+                        or confirmed_item.get("chamado_id")
+                    )
+                    confirmed_actor = self._extract_actor_from_item(confirmed_item)
                 self._send_json(200, {
                     "ok": True,
                     "message": "Ocorrência criada.",
-                    "ocorrencia_id": created_id,
+                    "ocorrencia_id": confirmed_id or created_id,
+                    "responsavel": confirmed_actor or requested_by or None,
+                    "confirmed": bool(confirmed_item),
+                    "confirm_attempts": confirm_attempts,
                     "sgp": out,
                     "sgp_auth_user": AUTH[0] if isinstance(AUTH, tuple) and len(AUTH) else None,
                 })
